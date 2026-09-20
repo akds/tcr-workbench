@@ -1,0 +1,4 @@
+cell_id,donor_id,trav,traj,cdr3a,trbv,trbj,cdr3b
+synthetic_cell_1,synthetic_donor,TRAV21,TRAJ6,CAVRPGGAGPFFVVF,TRBV7-9,TRBJ2-7,CASSLGQAYEQYF
+synthetic_cell_2,synthetic_donor,TRAV21,TRAJ6,CAVRPGGAGPFFVVF,TRBV7-9,TRBJ2-7,CASSLGQAYEQYF
+synthetic_cell_3,synthetic_donor,TRAV21,TRAJ6,CAVRPGGAGPFFVVF,,,

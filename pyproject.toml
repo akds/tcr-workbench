@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tcr-workbench"
+version = "0.1.0"
+description = "Auditable antigen hypothesis prioritization for human and mouse alpha-beta TCRs"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.9"
+dependencies = ["polars>=1.36,<2", "pyarrow>=14", "pydantic>=2.7,<3", "rapidfuzz>=3.9,<4", "numpy>=1.24"]
+
+[project.optional-dependencies]
+dataset = ["h5py>=3.10"]
+test = ["pytest>=8", "h5py>=3.10", "ruff>=0.9"]
+
+[project.scripts]
+tcr-workbench = "tcr_workbench.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+tcr_workbench = ["data/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]

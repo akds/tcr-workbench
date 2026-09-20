@@ -1,0 +1,6 @@
+barcode,donor_id,contig_id,chain,v_gene,j_gene,cdr3,productive,high_confidence,is_cell,umis
+synthetic_cell_1,synthetic_donor,synthetic_contig_1a,TRA,TRAV21,TRAJ6,CAVRPGGAGPFFVVF,true,true,true,10
+synthetic_cell_1,synthetic_donor,synthetic_contig_1b,TRB,TRBV7-9,TRBJ2-7,CASSLGQAYEQYF,true,true,true,8
+synthetic_cell_2,synthetic_donor,synthetic_contig_2a,TRA,TRAV21,TRAJ6,CAVRPGGAGPFFVVF,true,true,true,7
+synthetic_cell_2,synthetic_donor,synthetic_contig_2b,TRB,TRBV7-9,TRBJ2-7,CASSLGQAYEQYF,true,true,true,9
+synthetic_cell_3,synthetic_donor,synthetic_contig_3a,TRA,TRAV21,TRAJ6,CAVRPGGAGPFFVVF,true,true,true,5

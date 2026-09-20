@@ -1,0 +1,6 @@
+sequence_id	cell_id	donor_id	locus	v_call	j_call	junction_aa	productive
+synthetic_contig_1a	synthetic_cell_1	synthetic_donor	TRA	TRAV21	TRAJ6	CAVRPGGAGPFFVVF	T
+synthetic_contig_1b	synthetic_cell_1	synthetic_donor	TRB	TRBV7-9	TRBJ2-7	CASSLGQAYEQYF	T
+synthetic_contig_2a	synthetic_cell_2	synthetic_donor	TRA	TRAV21	TRAJ6	CAVRPGGAGPFFVVF	T
+synthetic_contig_2b	synthetic_cell_2	synthetic_donor	TRB	TRBV7-9	TRBJ2-7	CASSLGQAYEQYF	T
+synthetic_contig_3a	synthetic_cell_3	synthetic_donor	TRA	TRAV21	TRAJ6	CAVRPGGAGPFFVVF	T

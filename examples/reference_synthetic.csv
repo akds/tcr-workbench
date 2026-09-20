@@ -1,0 +1,2 @@
+reference_id,cdr3a,cdr3b,trav,traj,trbv,trbj,peptide,hla,source,evidence,species
+synthetic_association_1,CAVRPGGAGPFFVVF,CASSLGQAYEQYF,TRAV21,TRAJ6,TRBV7-9,TRBJ2-7,GILGFVFTL,HLA-A*02:01,SYNTHETIC_DEMO_NOT_BIOLOGICAL_EVIDENCE,synthetic_test_only,human

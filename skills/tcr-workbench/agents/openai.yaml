@@ -1,0 +1,4 @@
+interface:
+  display_name: "TCR-Workbench"
+  short_description: "Run auditable TCR and peptide–MHC workflows"
+  default_prompt: "Use $tcr-workbench to choose and run the appropriate local immunology workflow, preserving uncertainty and provenance."
