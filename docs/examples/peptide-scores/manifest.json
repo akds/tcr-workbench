@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "scope": "Portable public example from a real local DecoderTCR ESM-C 300M Apple FP32 run. Numerical outputs are unchanged; HTML was regenerated from those saved outputs with the renderer identified below. The original machine-specific manifest is represented by its hash. Not biological accuracy validation.",
+  "command": "pmhc-score",
+  "species": "human",
+  "model": "DecoderTCR-ESMC_300M",
+  "checkpoint_sha256": "18d47c169d0ce992152838b8229e1c682b0a681f55057b471dcdcbf07d2fcad9",
+  "source_run_adapter_sha256": "d98ca12f797a8404ca8c9a1f8ff4015c0390a85ab3e47076e9a8e27f173b58b5",
+  "source_run_manifest_sha256": "8119398e06c30aaa302b63d614fd1b5e63a28c82f66a2112c33682a411d8cc55",
+  "outputs": {
+    "background_metadata.json": {
+      "sha256": "4926ae14ed10bc67960f0b3ab0bc500a336f7470586b7752651c1d38406a576c",
+      "size_bytes": 609
+    },
+    "background_scores.csv": {
+      "sha256": "efa82048c4f968f5a2cbeb936827ad02c8766d188acc61aac75de2d96c59465b",
+      "size_bytes": 162198
+    },
+    "background_scores.parquet": {
+      "sha256": "72a286add0724fe8787f049fb6d116f755c1041996623a1fb75c95f70070169c",
+      "size_bytes": 13728
+    },
+    "report.html": {
+      "sha256": "606801277b3949269ac09c774d29d7344593feaac9defdc98349ab098a4a6b6b",
+      "size_bytes": 24904
+    },
+    "results.csv": {
+      "sha256": "4f4fac4dcb02ee25b06bde987370bf0b4d74d16ffd8c699d1b9c9a29e239dc28",
+      "size_bytes": 3837
+    },
+    "results.parquet": {
+      "sha256": "47735b3c94da1a6200f7a8edd761e37482a7b3c929430ee7134fc02b8d396a66",
+      "size_bytes": 6639
+    },
+    "summary.json": {
+      "sha256": "9fcb16306f292af9a85a44a7d25b2bbad55c34d0bfd13c31f8783b8763ebbcbe",
+      "size_bytes": 473
+    }
+  },
+  "report_rendering": {
+    "method": "Regenerated offline from unchanged saved outputs; no new model execution",
+    "renderer_sha256": "c03df913509c1bc4258a54d8f153c3423523d03a159f267f9c0e06e3084e1f75",
+    "presentation_source_sha256": "19d4f92d7c58376dfea4d8e02a0ee21156f85701d3b1e1126d1f4d1ac0835814"
+  }
+}

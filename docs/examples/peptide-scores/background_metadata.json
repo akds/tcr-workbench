@@ -1,0 +1,14 @@
+{
+  "sampler": "uniform-aa20-v1",
+  "alphabet": "ACDEFGHIKLMNPQRSTVWY",
+  "numpy_version": "2.0.2",
+  "rng": "PCG64 with SHA-256-derived per-context seed",
+  "seed": 0,
+  "peptides_per_context": 1000,
+  "contexts": 1,
+  "sampled_rows": 1000,
+  "sampling": "Independent uniform draws from 20 amino acids, with replacement; length matched. Duplicates and overlap with tested peptides are retained as random draws.",
+  "interpretation": "Synthetic comparison, not known nonbinders, proteome frequencies, binding probabilities, or a calibrated significance test.",
+  "scored_rows": 1000,
+  "unresolved_rows": 0
+}

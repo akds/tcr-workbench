@@ -1,0 +1,26 @@
+{
+  "id": "biohub/DecoderTCR",
+  "sha": "803fed3bbf3dcc40ed481f7d50a20f668db0ef01",
+  "cardData": {
+    "license": "mit",
+    "tags": [
+      "MLM",
+      "Protein",
+      "TCR",
+      "Immunology"
+    ]
+  },
+  "safetensors": null,
+  "files": [
+    ".gitattributes",
+    "3B_DecoderTCR.ckpt",
+    "650M_DecoderTCR.ckpt",
+    "DecoderTCR-ESM2-V0.1/3B_DecoderTCR.ckpt",
+    "DecoderTCR-ESM2-V0.1/650M_DecoderTCR.ckpt",
+    "DecoderTCR-ESMC-V0.3/300M.ckpt",
+    "DecoderTCR-ESMC-V0.3/600M.ckpt",
+    "DecoderTCR-ESMC-V0.3/6B.ckpt",
+    "LICENSE",
+    "README.md"
+  ]
+}

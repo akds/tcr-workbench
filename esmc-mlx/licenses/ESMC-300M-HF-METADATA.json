@@ -1,0 +1,42 @@
+{
+  "id": "biohub/ESMC-300M",
+  "sha": "e4bac860f0c502cd80f3aeac3d0ce6524c6627cb",
+  "cardData": {
+    "license": [
+      "mit",
+      "other"
+    ],
+    "license_link": "https://github.com/Biohub/esm/blob/main/THIRD_PARTY_NOTICE.md",
+    "library_name": "transformers",
+    "language": "en",
+    "tags": [
+      "biology",
+      "esm",
+      "protein",
+      "protein-language-model",
+      "protein-embeddings",
+      "masked-language-modeling",
+      "transfer-learning",
+      "variant-effect-prediction",
+      "protein-engineering",
+      "transformers"
+    ]
+  },
+  "safetensors": {
+    "parameters": {
+      "F32": 332997184
+    },
+    "total": 332997184
+  },
+  "files": [
+    ".gitattributes",
+    "README.md",
+    "config.json",
+    "images/contact_pal.png",
+    "model.safetensors",
+    "modeling_esmc_remote.py",
+    "special_tokens_map.json",
+    "tokenizer.json",
+    "tokenizer_config.json"
+  ]
+}

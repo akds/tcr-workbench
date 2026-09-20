@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "scope": "Portable public example from a real local DecoderTCR ESM-C 300M Apple FP32 run. Numerical outputs are unchanged; HTML was regenerated from those saved outputs with the renderer identified below. The original machine-specific manifest is represented by its hash. Not biological accuracy validation.",
+  "command": "pmhc-profile",
+  "species": "human",
+  "model": "DecoderTCR-ESMC_300M",
+  "checkpoint_sha256": "18d47c169d0ce992152838b8229e1c682b0a681f55057b471dcdcbf07d2fcad9",
+  "source_run_adapter_sha256": "0192783ce797ad0c8db3c381c82f1fc735b5e717b597954fe4b82931632b1fec",
+  "source_run_manifest_sha256": "2bf7c92239cb6cbe895fb7ec3063cd6ac72d48794dde2b5b64a6110ca1df6c84",
+  "outputs": {
+    "profile.csv": {
+      "sha256": "c37ba15e7a2de3b022fee559e650913dbdacaed35042c079f15f6a84a1888162",
+      "size_bytes": 3772
+    },
+    "profile.parquet": {
+      "sha256": "19c02fa7c095cf333d8c6c2f4f2c7802951c3fdf83bb7d1060912abb26d4981d",
+      "size_bytes": 7389
+    },
+    "pssm.csv": {
+      "sha256": "02c0897315a9031f673e2e1ab8b537e88e79f19cbcb0dc56284696e8c846dc5c",
+      "size_bytes": 29451
+    },
+    "pssm.parquet": {
+      "sha256": "4e1d51827473e30d72ba3f96aa267a754e2a35d104b14d5f33cc57b8722a8085",
+      "size_bytes": 6213
+    },
+    "report.html": {
+      "sha256": "f19716373f61acf60a41a33f123bb1b391a607398faffa73b760a9ee08bc0cee",
+      "size_bytes": 89585
+    },
+    "summary.json": {
+      "sha256": "4ca4e990ad33fe9b0a7d64537db1d3f6b9cc1adbe811ae7e3839795570892809",
+      "size_bytes": 938
+    }
+  },
+  "report_rendering": {
+    "method": "Regenerated offline from unchanged saved outputs; no new model execution",
+    "renderer_sha256": "c03df913509c1bc4258a54d8f153c3423523d03a159f267f9c0e06e3084e1f75",
+    "presentation_source_sha256": "19d4f92d7c58376dfea4d8e02a0ee21156f85701d3b1e1126d1f4d1ac0835814"
+  }
+}

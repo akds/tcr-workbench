@@ -1,0 +1,12 @@
+{
+  "precision": "float32",
+  "approximate": false,
+  "input_rows": 12,
+  "unique_pairs": 12,
+  "eligible_unique_pairs": 12,
+  "scored_rows": 12,
+  "unresolved_rows": 0,
+  "metric": "pll_DecoderTCR-ESMC_300M",
+  "interpretation": "Uncalibrated DecoderTCR peptide log probability conditioned on HLA alone; not binding affinity or probability",
+  "comparison_scope": "Same checkpoint, explicit HLA molecule and peptide length; comparisons across contexts are uncalibrated"
+}

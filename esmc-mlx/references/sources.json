@@ -1,0 +1,8 @@
+{
+  "official_source": {"url": "https://github.com/Biohub/esm", "revision": "43b4548b86762edfa747b07d5f440aad3c33acee"},
+  "official_checkpoint": {"repo": "biohub/ESMC-300M", "revision": "e4bac860f0c502cd80f3aeac3d0ce6524c6627cb", "file": "model.safetensors", "sha256": "b06a03aa359c29a889151da4a07a517f2c307c1fcc61c8b767ec5360dd40cb49", "source_tensors": 398, "converted_tensors": 308, "parameters": 332997184},
+  "decoder_source": {"url": "https://github.com/Biohub/DecoderTCR", "revision": "3e3d9889d26d79635f674940ddab039c4dc6f9f9"},
+  "decoder_checkpoint": {"repo": "biohub/DecoderTCR", "revision": "803fed3bbf3dcc40ed481f7d50a20f668db0ef01", "file": "DecoderTCR-ESMC-V0.3/300M.ckpt", "sha256": "18d47c169d0ce992152838b8229e1c682b0a681f55057b471dcdcbf07d2fcad9", "source_tensors": 308, "converted_tensors": 308, "parameters": 332997184, "safe_load": "torch.load(weights_only=True,mmap=True,map_location='cpu')"},
+  "mlx_lm_reference": {"url": "https://github.com/ml-explore/mlx-lm/pull/1484", "revision": "c26b9af872158d822a8c95589708eedd3b9c0831"},
+  "normalization_bias_audit": "Both actual checkpoints have nonzero input and post-attention LayerNorm biases in all 30 layers; all are retained. Q/K and final LayerNorm have no bias tensors."
+}

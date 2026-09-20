@@ -1,0 +1,21 @@
+{
+  "input_hla": "HLA-A*02:01",
+  "hla": "HLA-A*02:01",
+  "length": 9,
+  "species": "human",
+  "with_tcr": false,
+  "probability_floor": 1e-12,
+  "precision": "float32",
+  "approximate": false,
+  "status": "Profiled",
+  "reason": "",
+  "profile_positions": 9,
+  "background": "uniform 0.05 for each of 20 standard amino acids",
+  "pssm_definition": "log2(max(probability, probability_floor) / 0.05)",
+  "numeric_floor_applies_only_to_log2_odds": true,
+  "conditioning_context": "HLA only; both TCR chains absent",
+  "pssm_score_relationship": "The PSSM uses a 20-amino-acid normalizer and cannot reconstruct the absolute full-vocabulary PLL (64 channels for ESM-C; 33 for ESM-2)",
+  "floored_entries": 0,
+  "interpretation": "Conditional amino-acid marginals with all peptide positions masked; not binding probabilities",
+  "class_ii_register_policy": "No binding-core register is inferred; positions span the requested peptide length"
+}
