@@ -255,7 +255,7 @@ The exact molecule must be in the model's reference. Workbench does not guess mi
 
 ## Models and hardware
 
-Workbench uses **DecoderTCR 300M, 600M and 6B**, fine-tuned from ESM-C. The default is **DecoderTCR 300M**. Larger models require more memory and are not uniformly better across the benchmarks below.
+Workbench uses **DecoderTCR 300M, 600M and 6B**, fine-tuned from ESM-C. The default is **DecoderTCR 300M**. Benchmarks for different V0.3 models sizes are summarized in the next section. 
 
 | Model | CPU / NVIDIA GPU | Apple Silicon |
 |---|---|---|
