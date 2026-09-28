@@ -207,13 +207,14 @@ def expected_shapes(config: ModelConfig) -> dict[str, tuple[int, ...]]:
     return shapes
 
 
-def _dropped_buffer_count(config: ModelConfig) -> int:
-    """Non-parameter source buffers the adapter drops rather than converts.
+def _max_dropped_buffer_count(config: ModelConfig) -> int:
+    """Upper bound on non-parameter source buffers the adapter may drop.
 
-    Only the decodertcr_internal safetensors carry these (one recomputed rotary
-    ``inv_freq`` per block); Lightning and biohub sources carry none. The raw
-    ``source_tensor_count`` recorded in the manifest is the mapped tensor count
-    plus these dropped buffers, so this keeps the verify inventory check exact.
+    decodertcr_internal safetensors may carry at most one recomputed rotary
+    ``inv_freq`` per block; the 1.5.0 export ships none (rotary is recomputed at
+    model build), earlier exports shipped one per block. Lightning and biohub
+    sources carry none. The manifest ``source_tensor_count`` is therefore the
+    mapped tensor count plus between zero and this many dropped buffers.
     """
     if config.source_variant == "decodertcr-safetensors-v1":
         return config.num_hidden_layers
@@ -515,7 +516,8 @@ def verify_bundle(path: str | Path) -> tuple[ModelConfig, dict, Path]:
             raise BundleError("Manifest tensor inventory differs from architecture")
         if manifest.parameter_count != sum(int(np.prod(s)) for s in shapes.values()):
             raise BundleError("Manifest parameter count differs from architecture")
-        if manifest.source_tensor_count != sum(map(len, mapping.values())) + _dropped_buffer_count(config):
+        dropped = manifest.source_tensor_count - sum(map(len, mapping.values()))
+        if not 0 <= dropped <= _max_dropped_buffer_count(config):
             raise BundleError("Manifest source tensor count differs from source adapter")
         for key, record in manifest.tensors.items():
             if record.shape != list(shapes[key]) or record.source_keys != list(mapping[key]):
