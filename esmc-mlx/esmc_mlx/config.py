@@ -6,7 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-SourceVariant = Literal["biohub-esmc-published-v1", "decodertcr-lightning-v03"]
+SourceVariant = Literal["biohub-esmc-published-v1", "decodertcr-lightning-v03", "decodertcr-safetensors-v1"]
+DECODER_SOURCE_VARIANTS = ("decodertcr-lightning-v03", "decodertcr-safetensors-v1")
 TokenizerVariant = Literal["biohub-esmc", "decodertcr-esm1b"]
 ModelSize = Literal["300m", "600m", "6b"]
 
@@ -38,7 +39,8 @@ class ModelConfig(BaseModel):
     def consistent_architecture(self):
         if self.hidden_size % self.num_attention_heads or self.head_dim % 2:
             raise ValueError("hidden_size must divide into even-width attention heads")
-        required = {"biohub-esmc-published-v1": "biohub-esmc", "decodertcr-lightning-v03": "decodertcr-esm1b"}
+        required = {"biohub-esmc-published-v1": "biohub-esmc", "decodertcr-lightning-v03": "decodertcr-esm1b",
+                    "decodertcr-safetensors-v1": "decodertcr-esm1b"}
         if required[self.source_variant] != self.tokenizer_variant:
             raise ValueError("tokenizer_variant does not match source_variant")
         return self
@@ -57,8 +59,8 @@ class ModelConfig(BaseModel):
 
 
 def config_300m(source_variant: SourceVariant) -> ModelConfig:
-    """Only two explicitly inventoried 300M source formats are convertible."""
-    decoder = source_variant == "decodertcr-lightning-v03"
+    """Only explicitly inventoried 300M source formats are convertible."""
+    decoder = source_variant in DECODER_SOURCE_VARIANTS
     return ModelConfig(
         model_id="decodertcr-esmc-300m" if decoder else "esmc-300m",
         source_variant=source_variant,
@@ -68,8 +70,8 @@ def config_300m(source_variant: SourceVariant) -> ModelConfig:
 
 def config_600m(source_variant: SourceVariant) -> ModelConfig:
     """Pinned DecoderTCR 600M uses the same encoder/tokenizer with larger dimensions."""
-    if source_variant != "decodertcr-lightning-v03":
-        raise ValueError("600M conversion currently supports DecoderTCR Lightning checkpoints only")
+    if source_variant not in DECODER_SOURCE_VARIANTS:
+        raise ValueError("600M conversion supports DecoderTCR Lightning or safetensors checkpoints only")
     return ModelConfig(model_id="decodertcr-esmc-600m", source_variant=source_variant,
                        tokenizer_variant="decodertcr-esm1b", hidden_size=1152,
                        num_attention_heads=18, num_hidden_layers=36, intermediate_size=3072)
@@ -81,8 +83,8 @@ def config_6b(source_variant: SourceVariant) -> ModelConfig:
     This definition has no claim of real-checkpoint parity on the development
     machine. The upstream SwiGLU expansion rounds 8/3 * 2560 up to 6912.
     """
-    if source_variant != "decodertcr-lightning-v03":
-        raise ValueError("6B conversion currently supports DecoderTCR Lightning checkpoints only")
+    if source_variant not in DECODER_SOURCE_VARIANTS:
+        raise ValueError("6B conversion supports DecoderTCR Lightning or safetensors checkpoints only")
     return ModelConfig(model_id="decodertcr-esmc-6b", source_variant=source_variant,
                        tokenizer_variant="decodertcr-esm1b", hidden_size=2560,
                        num_attention_heads=40, num_hidden_layers=80, intermediate_size=6912)
@@ -100,6 +102,8 @@ def decoder_model_size(model: str) -> ModelSize:
 def validate_decoder_config(config: ModelConfig, model: str) -> None:
     size = decoder_model_size(model)
     factory = {"300m": config_300m, "600m": config_600m, "6b": config_6b}[size]
-    expected = factory("decodertcr-lightning-v03")
+    if config.source_variant not in DECODER_SOURCE_VARIANTS or config.tokenizer_variant != "decodertcr-esm1b":
+        raise ValueError(f"Apple bundle source/tokenizer is not a DecoderTCR variant for {model}")
+    expected = factory(config.source_variant)
     if config.model_dump(exclude={"model_id"}) != expected.model_dump(exclude={"model_id"}):
         raise ValueError(f"Apple bundle architecture/tokenizer does not match {model}")

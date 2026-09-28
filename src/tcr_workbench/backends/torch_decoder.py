@@ -9,23 +9,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..model_registry import resolve_model
 
 
-def checkpoint_arguments(model: str, checkpoint) -> list[str]:
-    if checkpoint is None:
-        return []
-    spec = resolve_model(model)
-    return ["--checkpoint", str(Path(checkpoint).resolve()),
-            "--backbone", spec.backbone, "--arch", spec.arch]
-
-
-def guard_checkpoint(command, model, checkpoint):
-    if checkpoint is None:
-        return command
-    return [command[0], str(Path(__file__).with_name("torch_checkpoint_worker.py")),
-            "--checkpoint", str(Path(checkpoint).resolve()),
-            "--expected-arch", resolve_model(model).arch, "--module", command[2],
-            "--", *command[3:]]
-
-
 class TorchRuntime(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
     backend: Literal["torch"]
@@ -55,16 +38,15 @@ def execute_torch(input_path, candidate, temporary, fingerprint, *, timeout, pro
     runtime_path = Path(temporary) / "runtime.json"
     from ..species import reconstruction_arguments, verify_biological_fingerprint
     verify_biological_fingerprint(fingerprint)
+    spec = resolve_model(fingerprint["model"])
     _execute([fingerprint["python_executable"], str(workers / "reconstruct_worker.py"),
               "--input", str(input_path), "--output", str(reconstructed),
-              "--context-type", fingerprint["context_type"],
+              "--context-type", fingerprint["context_type"], "--convention", spec.convention,
               *reconstruction_arguments(fingerprint)], root, timeout)
     command = [fingerprint["python_executable"], str(workers / "torch_sequence_worker.py"),
                "--input", str(reconstructed), "--output", str(candidate), "--runtime", str(runtime_path),
                "--context-type", fingerprint["context_type"], "--model", fingerprint["model"],
-               "--device", fingerprint["device"], "--cache-bytes", str(fingerprint.get("cache_bytes", 67108864))]
-    if fingerprint.get("checkpoint_path"):
-        command.extend(["--checkpoint", fingerprint["checkpoint_path"]])
+               "--model-id", spec.model_id, "--device", fingerprint["device"]]
     if profile:
         command.append("--profile-batch" if profile == "batch" else "--profile")
     _execute(command, root, timeout)

@@ -29,7 +29,8 @@ def tiny_source(config):
     return output
 
 
-@pytest.mark.parametrize("variant", ["biohub-esmc-published-v1", "decodertcr-lightning-v03"])
+@pytest.mark.parametrize("variant", ["biohub-esmc-published-v1", "decodertcr-lightning-v03",
+                                     "decodertcr-safetensors-v1"])
 def test_inventory_fusion_order_biases_no_transpose(variant):
     config = tiny_config(variant)
     source = tiny_source(config)
@@ -147,6 +148,52 @@ def test_real_safetensors_conversion_atomic_custom_identity(tmp_path, monkeypatc
     assert checked.model_id == "custom-test"
     with pytest.raises(BundleError, match="already exists"):
         module.convert_checkpoint(source, out, c.source_variant, model_id="custom-test")
+
+
+def test_safetensors_conversion_drops_rotary_buffer_and_verifies(tmp_path, monkeypatch):
+    import esmc_mlx.weights as module
+    c = tiny_config("decodertcr-safetensors-v1")
+    monkeypatch.setattr(module, "config_300m", lambda variant: c)
+    # Normalized-key state dict plus one recomputed rotary buffer per block.
+    state = dict(tiny_source(c))
+    for layer in range(c.num_hidden_layers):
+        state[f"transformer.blocks.{layer}.attn.rotary.inv_freq"] = np.arange(
+            c.head_dim // 2, dtype=np.float32)
+    source = tmp_path / "input.safetensors"
+    save_file(state, source)
+    # No pinned hashes for this variant, so an explicit model_id is required.
+    with pytest.raises(BundleError, match="explicit --model-id"):
+        module.convert_checkpoint(source, tmp_path / "noid", c.source_variant)
+    out = tmp_path / "converted"
+    manifest = module.convert_checkpoint(source, out, c.source_variant, model_id="internal-test")
+    assert manifest["checkpoint_identity"] == "user-supplied-unvalidated"
+    assert manifest["model_revision"] is None and manifest["model_url"] is None
+    assert manifest["discarded_training_keys"] == []
+    # Raw file count includes the dropped buffers; converted inventory excludes them.
+    assert manifest["source_tensor_count"] == len(state)
+    with __import__("safetensors").safe_open(out / "model.safetensors", framework="np") as reader:
+        keys = set(reader.keys())
+    assert not any("rotary" in k for k in keys)
+    assert keys == set(expected_shapes(c))
+    checked, _, _ = verify_bundle(out)
+    assert checked.model_id == "internal-test"
+
+
+def test_safetensors_conversion_refuses_unexpected_key(tmp_path, monkeypatch):
+    import esmc_mlx.weights as module
+    c = tiny_config("decodertcr-safetensors-v1")
+    monkeypatch.setattr(module, "config_300m", lambda variant: c)
+    state = dict(tiny_source(c))
+    for layer in range(c.num_hidden_layers):
+        state[f"transformer.blocks.{layer}.attn.rotary.inv_freq"] = np.arange(
+            c.head_dim // 2, dtype=np.float32)
+    # A genuine unexpected tensor must never be silently dropped.
+    state["transformer.blocks.0.attn.mystery.weight"] = np.zeros(3, dtype=np.float32)
+    source = tmp_path / "input.safetensors"
+    save_file(state, source)
+    with pytest.raises(BundleError, match="Unexpected non-parameter key"):
+        module.convert_checkpoint(source, tmp_path / "bad", c.source_variant, model_id="internal-test")
+    assert not (tmp_path / "bad").exists()
 
 
 def test_lightning_safe_load_discards_only_named_training_state(tmp_path, monkeypatch):

@@ -241,8 +241,9 @@ def prepare_background(contexts: pl.DataFrame, staging: Path, *, background_mode
 
 def verify_background_execution(metadata: dict, scoring: dict) -> None:
     """Reject changed model/runtime identities between generation and scoring."""
-    keys = ("model", "checkpoint_sha256", "bundle_sha256", "precision", "device", "species",
-            "mhc_reference_sha256", "decoder_source_sha256", "environment_sha256",
+    keys = ("model", "model_id", "artifact_sha256", "catalog_sha256", "bundle_sha256",
+            "checkpoint_sha256", "precision", "device", "species", "mhc_reference_sha256",
+            "workbench_adapter_sha256", "environment_sha256",
             "mlx_environment_sha256", "mlx_source_sha256")
     generation = metadata.get("profile_execution") or {}
     for key in keys:

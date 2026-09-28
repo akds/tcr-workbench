@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import tempfile
@@ -37,6 +38,15 @@ SOURCE_PINS = {
         "model_revision": "803fed3bbf3dcc40ed481f7d50a20f668db0ef01",
         "model_url": "https://huggingface.co/biohub/DecoderTCR",
     },
+    "decodertcr-safetensors-v1": {
+        # PLACEHOLDER adapter revision: this identifies the esmc-mlx conversion
+        # schema for decodertcr_internal .safetensors, not a real upstream commit.
+        # TODO(registry): replace with the real decodertcr_internal release identity
+        "source_revision": "0000000000000000000000000000000000000000",
+        "source_url": "https://github.com/Biohub/DecoderTCR-internal",
+        "model_revision": "803fed3bbf3dcc40ed481f7d50a20f668db0ef01",
+        "model_url": "https://huggingface.co/biohub/DecoderTCR",
+    },
 }
 KNOWN_CHECKPOINT_HASHES = {
     "biohub-esmc-published-v1": "b06a03aa359c29a889151da4a07a517f2c307c1fcc61c8b767ec5360dd40cb49",
@@ -49,6 +59,11 @@ KNOWN_CHECKPOINTS_BY_SIZE = {
         "600m": "4d3c84f30e3781c023e412eb3f3c098ef9fe64fd1423fd34df4b40b9dcbac0aa",
         "6b": "b6bd3170b55a9a06d9c1472e248bd083e092afc7924439b444bf7379b74ab692",
     },
+    # No real registry artifact hashes are available in this workspace, so every
+    # decodertcr_internal safetensors conversion is user-supplied-unvalidated and
+    # requires an explicit --model-id. We cannot honestly pin what we cannot hash.
+    # TODO(registry): populate with real decodertcr_internal release SHA-256 values.
+    "decodertcr-safetensors-v1": {},
 }
 
 
@@ -136,7 +151,8 @@ class BundleManifest(BaseModel):
             raise ValueError("user-supplied checkpoints cannot claim a known model release")
         if set(self.discarded_training_keys) - _TRAINER_KEYS:
             raise ValueError("unrecognized discarded training-state keys")
-        if self.source_variant == "biohub-esmc-published-v1" and self.discarded_training_keys:
+        if (self.source_variant in ("biohub-esmc-published-v1", "decodertcr-safetensors-v1")
+                and self.discarded_training_keys):
             raise ValueError("safetensors sources cannot contain discarded training-state keys")
         if not any(name.startswith("licenses/") for name in self.files):
             raise ValueError("bundle must retain source license notices")
@@ -191,11 +207,24 @@ def expected_shapes(config: ModelConfig) -> dict[str, tuple[int, ...]]:
     return shapes
 
 
+def _dropped_buffer_count(config: ModelConfig) -> int:
+    """Non-parameter source buffers the adapter drops rather than converts.
+
+    Only the decodertcr_internal safetensors carry these (one recomputed rotary
+    ``inv_freq`` per block); Lightning and biohub sources carry none. The raw
+    ``source_tensor_count`` recorded in the manifest is the mapped tensor count
+    plus these dropped buffers, so this keeps the verify inventory check exact.
+    """
+    if config.source_variant == "decodertcr-safetensors-v1":
+        return config.num_hidden_layers
+    return 0
+
+
 def source_mapping(config: ModelConfig) -> dict[str, tuple[str, ...]]:
     """Each destination maps to ordered source parts; fusion is along axis zero."""
     mapping = {}
     for destination in expected_shapes(config):
-        if config.source_variant == "decodertcr-lightning-v03":
+        if config.source_variant in ("decodertcr-lightning-v03", "decodertcr-safetensors-v1"):
             name = destination
             for before, after in ((".attn.ln_qkv.", ".attn.layernorm_qkv.0."),
                                   (".attn.qkv.", ".attn.layernorm_qkv.1."),
@@ -203,7 +232,11 @@ def source_mapping(config: ModelConfig) -> dict[str, tuple[str, ...]]:
                                   (".ffn.fc1.", ".ffn.1."),
                                   (".ffn.fc2.", ".ffn.3.")):
                 name = name.replace(before, after)
-            mapping[destination] = ("model.model." + name,)
+            # The decodertcr_internal safetensors ship already-normalized keys
+            # (no "model.model." trainer prefix); Lightning .ckpt keys retain it.
+            if config.source_variant == "decodertcr-lightning-v03":
+                name = "model.model." + name
+            mapping[destination] = (name,)
             continue
         if destination == "embed.weight":
             mapping[destination] = ("esmc.embed_tokens.weight",)
@@ -270,6 +303,36 @@ class _SafeSource(Mapping):
     def __init__(self, source):
         self.source = source
         self.keys_ = source.keys()
+    def __len__(self):
+        return len(self.keys_)
+    def __iter__(self):
+        return iter(self.keys_)
+    def __getitem__(self, key):
+        return self.source.get_tensor(key)
+
+
+# Non-parameter buffers present in decodertcr_internal safetensors that esmc-mlx
+# recomputes and must therefore drop rather than convert. Any raw key that is
+# neither an expected weight nor a listed buffer is a real tensor we refuse to
+# silently discard.
+_ALLOWED_DROP_PATTERNS = (re.compile(r"^transformer\.blocks\.\d+\.attn\.rotary\.inv_freq$"),)
+
+
+class _FilteredSafeSource(Mapping):
+    """Expose only the expected tensors, asserting every dropped key is a known buffer."""
+    def __init__(self, source, expected: set[str]):
+        raw = set(source.keys())
+        dropped = raw - expected
+        for key in sorted(dropped):
+            if not any(pattern.match(key) for pattern in _ALLOWED_DROP_PATTERNS):
+                raise BundleError(
+                    f"Unexpected non-parameter key in safetensors source: {key}; "
+                    "refusing to silently drop a tensor that is not a recomputed buffer")
+        missing = expected - raw
+        if missing:
+            raise BundleError(f"Source safetensors is missing tensors: {sorted(missing)}")
+        self.source = source
+        self.keys_ = tuple(sorted(expected))
     def __len__(self):
         return len(self.keys_)
     def __iter__(self):
@@ -357,6 +420,13 @@ def convert_checkpoint(source: str | Path, output: str | Path, source_variant: S
             with safe_open(source, framework="np", device="cpu") as reader:
                 source_count = len(reader.keys())
                 tensors, records = convert_tensors(_SafeSource(reader), config)
+        elif source_variant == "decodertcr-safetensors-v1":
+            # decodertcr_internal ships normalized-key .safetensors with extra
+            # recomputed rotary buffers and no trainer state. No torch import.
+            with safe_open(source, framework="np", device="cpu") as reader:
+                source_count = len(reader.keys())
+                expected = {key for keys in source_mapping(config).values() for key in keys}
+                tensors, records = convert_tensors(_FilteredSafeSource(reader, expected), config)
         else:
             import torch
             # Explicitly safe: no unrestricted pickle fallback or auto-allowlisted
@@ -445,7 +515,7 @@ def verify_bundle(path: str | Path) -> tuple[ModelConfig, dict, Path]:
             raise BundleError("Manifest tensor inventory differs from architecture")
         if manifest.parameter_count != sum(int(np.prod(s)) for s in shapes.values()):
             raise BundleError("Manifest parameter count differs from architecture")
-        if manifest.source_tensor_count != sum(map(len, mapping.values())):
+        if manifest.source_tensor_count != sum(map(len, mapping.values())) + _dropped_buffer_count(config):
             raise BundleError("Manifest source tensor count differs from source adapter")
         for key, record in manifest.tensors.items():
             if record.shape != list(shapes[key]) or record.source_keys != list(mapping[key]):

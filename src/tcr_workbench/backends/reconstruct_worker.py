@@ -129,6 +129,7 @@ def main():
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--context-type", choices=("tcr-pmhc", "pmhc"), default="tcr-pmhc")
+    parser.add_argument("--convention", choices=("v1", "v2"), default="v2")
     parser.add_argument("--species", choices=("human", "mouse"), default="human")
     parser.add_argument("--mhc-reference")
     parser.add_argument("--mhc-reference-sha256")
@@ -155,19 +156,31 @@ def main():
         return
     if args.mhc_reference or args.mhc_reference_sha256:
         raise ValueError("Human reconstruction uses the pinned human reference")
+    from decodertcr_internal.reconstruct import stitch_tcrs, lookup_hla
+    from decodertcr_internal.reconstruct.hla import _reference
+    from decodertcr_internal.core import ValidationError
+    reference = _reference(args.convention)
     if args.context_type == "pmhc":
-        from DecoderTCR.reconstruct.hla import _reference
-        reconstruct_pmhc(args.input, args.output, _reference())
+        reconstruct_pmhc(args.input, args.output, reference)
         return
-    from DecoderTCR.reconstruct.tcr import stitch_tcrs
-    from DecoderTCR.reconstruct.hla import lookup_hla, _reference
+
+    def stitch(rows):
+        # Upstream returns a list aligned to the input; re-key by the row name so
+        # the amortized reconstruction cache can address each unique receptor.
+        return {row["name"]: row for row in stitch_tcrs(rows)}
 
     def lookup_molecule(allele):
         # Preserve the original class-I oracle's exact audit messages. Its
         # normalizer cannot represent class-II pairs, so those use strict keys.
-        return lookup_exact_hla(allele, _reference()) if "/" in allele else lookup_hla(allele)
+        if "/" in allele:
+            return lookup_exact_hla(allele, reference)
+        try:
+            return lookup_hla(allele, args.convention)
+        except ValidationError as exc:
+            # The cache records unresolved alleles from KeyError; keep that contract.
+            raise KeyError(str(exc)) from exc
 
-    reconstruct(args.input, args.output, stitch=stitch_tcrs, lookup=lookup_molecule)
+    reconstruct(args.input, args.output, stitch=stitch, lookup=lookup_molecule)
 
 
 if __name__ == "__main__":

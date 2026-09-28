@@ -155,25 +155,27 @@ def test_external_input_cannot_leak_labels(tmp_path, receptor, panel):
         p._input_frame(path)
 
 
-def test_checkpoint_input_source_and_output_invalidate_cache(
+def test_registry_environment_and_output_invalidate_cache(
     tmp_path, receptor, panel, monkeypatch
 ):
     path = export(tmp_path, receptor, panel)
     root = tmp_path / "decoder"
-    source = root / "src/DecoderTCR/utils/predict_from_genes.py"
-    source.parent.mkdir(parents=True)
-    source.write_text("# pretend checkout\n")
-    checkpoint = root / p.CHECKPOINTS[p.DEFAULT_MODEL]
-    checkpoint.parent.mkdir(parents=True)
-    checkpoint.write_bytes(b"fake-weights")
-    monkeypatch.setattr(
-        p,
-        "_environment_fingerprint",
-        lambda *args: {
-            "environment_sha256": "fake_environment",
-            "germline_sha256": "fake_germline",
-        },
-    )
+    root.mkdir(parents=True)
+    # Weights are resolved from the shared registry, not scanned from a local
+    # checkout. The registry release identity (artifact_sha256) and the package
+    # environment identity both flow through the environment fingerprint.
+    environment = {
+        "environment_sha256": "fake_environment",
+        "germline_sha256": "fake_germline",
+        "decoder_version": "0.3.1",
+        "decoder_origin": str(root / "decodertcr_internal/__init__.py"),
+        "registry_root": str(root / "registry"),
+        "artifact_sha256": "a" * 64,
+        "catalog_sha256": "c" * 64,
+        "manifest_sha256": "m" * 64,
+        "model_sequence_convention": "v2",
+    }
+    monkeypatch.setattr(p, "_environment_fingerprint", lambda *args: dict(environment))
     calls = []
 
     def fake(source, candidate, temporary, fingerprint, **kwargs):
@@ -192,11 +194,13 @@ def test_checkpoint_input_source_and_output_invalidate_cache(
         p.import_decoder_scores(path, scored, require_manifest=True)["provenance"][0]
         == "hash_verified"
     )
-    checkpoint.write_bytes(b"updated-weights")
+    # A different released registry artifact must not reuse the previous scores.
+    environment["artifact_sha256"] = "b" * 64
     with pytest.raises(ValueError, match="provenance"):
         p.run_decoder(path, scored, **kwargs)
     p.run_decoder(path, scored, force=True, **kwargs)
-    source.write_text("# changed source")
+    # A changed package/environment identity likewise invalidates the cache.
+    environment["environment_sha256"] = "changed_environment"
     with pytest.raises(ValueError, match="provenance"):
         p.run_decoder(path, scored, **kwargs)
     p.run_decoder(path, scored, force=True, **kwargs)
@@ -317,13 +321,15 @@ def test_peptide_na_is_not_a_null_marker(tmp_path, receptor):
     assert p.empirical_profile(panel)["length"].to_list() == [2] * 40
 
 
-def test_environment_checks_import_origin_and_germline_changes(tmp_path, monkeypatch):
+def test_environment_checks_package_registry_and_germline_changes(tmp_path, monkeypatch):
     germline = tmp_path / "Stitchr"
     germline.mkdir()
     data = germline / "TRAV.fasta"
     data.write_text(">TRAV1\nAAAA\n")
     metadata = {
-        "decoder_origin": str(tmp_path / "src/DecoderTCR/__init__.py"),
+        "decoder_origin": str(tmp_path / "decodertcr_internal/__init__.py"),
+        "decoder_version": p.MIN_DECODER_VERSION,
+        "registry_root": str(tmp_path / "registry"),
         "germline_roots": [str(germline)],
         "packages": [["torch", "2.9.0"]],
     }
@@ -337,8 +343,19 @@ def test_environment_checks_import_origin_and_germline_changes(tmp_path, monkeyp
     second = p._environment_fingerprint(tmp_path / "python", tmp_path)
     assert first["germline_sha256"] != second["germline_sha256"]
     assert first["environment_sha256"] == second["environment_sha256"]
-    metadata["decoder_origin"] = "/some/other/DecoderTCR/__init__.py"
-    with pytest.raises(ValueError, match="supplied checkout"):
+    # decodertcr_internal must be installed in the selected environment.
+    metadata["decoder_origin"] = None
+    with pytest.raises(ValueError, match="not installed"):
+        p._environment_fingerprint(tmp_path / "python", tmp_path)
+    # An unconfigured registry is a clear, actionable failure, not a silent reuse.
+    metadata["decoder_origin"] = str(tmp_path / "decodertcr_internal/__init__.py")
+    metadata["registry_error"] = "no registry configured"
+    with pytest.raises(ValueError, match="registry"):
+        p._environment_fingerprint(tmp_path / "python", tmp_path)
+    # A package below the minimum supported version is rejected.
+    del metadata["registry_error"]
+    metadata["decoder_version"] = "0.2.0"
+    with pytest.raises(ValueError, match="too old"):
         p._environment_fingerprint(tmp_path / "python", tmp_path)
 
 
@@ -463,7 +480,7 @@ def test_execute_uses_selected_environment_thimble_and_sdpa(tmp_path, monkeypatc
 
     monkeypatch.setattr(p.subprocess, "run", run)
     python = tmp_path / "env/bin/python"
-    p._execute([str(python), "-m", "DecoderTCR"], tmp_path, None)
+    p._execute([str(python), "-m", "decodertcr_internal"], tmp_path, None)
     assert seen["env"]["PATH"].split(p.os.pathsep)[0] == str(python.parent)
     assert seen["env"]["PATH"].split(p.os.pathsep)[1:] == ["ambient-bin"]
     assert seen["env"]["USE_FLASH_ATTN"] == "0"
@@ -563,15 +580,23 @@ def test_import_explicitly_marks_unreported_gene_choices(tmp_path, receptor, pan
 
 def test_germline_fingerprint_includes_stitchr_sibling_data(tmp_path, monkeypatch):
     source = tmp_path / "src"
-    for package in ("DecoderTCR", "Stitchr"):
-        directory = source / package
-        directory.mkdir(parents=True)
-        (directory / "__init__.py").write_text("")
+    # A minimal installed decodertcr_internal package with a configured registry,
+    # plus a Stitchr sibling whose germline data is the fingerprinted resource.
+    decoder = source / "decodertcr_internal"
+    decoder.mkdir(parents=True)
+    (decoder / "__init__.py").write_text(
+        "__version__ = " + repr(p.MIN_DECODER_VERSION) + "\n"
+        "def models():\n    return ['decodertcr@1.0.0:300M']\n"
+    )
+    (decoder / "core.py").write_text("def registry_root():\n    return 'configured-registry'\n")
+    stitchr = source / "Stitchr"
+    stitchr.mkdir(parents=True)
+    (stitchr / "__init__.py").write_text("")
     data = source / "Data" / "HUMAN"
     data.mkdir(parents=True)
     fasta = data / "TRAV.fasta"
     fasta.write_text(">TRAV1\nAAAA\n")
-    (source / "Stitchr" / "stitchrfunctions.py").write_text(f"data_dir = {str(data.parent)!r}\n")
+    (stitchr / "stitchrfunctions.py").write_text(f"data_dir = {str(data.parent)!r}\n")
     environment = tmp_path / "env"
     venv.EnvBuilder(with_pip=False).create(environment)
     site_packages = next(environment.rglob("site-packages"))
@@ -593,6 +618,25 @@ def test_decoder_device_aliases(device, canonical):
 
 
 def test_apple_device_requires_explicit_runtime_and_bundle_before_input_access(tmp_path):
+    # The MLX runtime is required before any input is read.
+    with pytest.raises(ValueError, match="Apple MLX requires --mlx-python"):
+        p.run_decoder(
+            tmp_path / "absent.csv",
+            tmp_path / "out.csv",
+            decoder_dir=tmp_path,
+            python_executable=tmp_path / "missing_python",
+            device="apple",
+        )
+    with pytest.raises(ValueError, match="Apple MLX requires --mlx-python"):
+        p.run_decoder_profile(
+            {},
+            tmp_path / "profile.csv",
+            length=9,
+            decoder_dir=tmp_path,
+            python_executable=tmp_path / "missing_python",
+            device="apple",
+        )
+    # With the runtime supplied, the converted bundle is still required first.
     with pytest.raises(ValueError, match="Apple MLX requires --checkpoint"):
         p.run_decoder(
             tmp_path / "absent.csv",
@@ -600,6 +644,7 @@ def test_apple_device_requires_explicit_runtime_and_bundle_before_input_access(t
             decoder_dir=tmp_path,
             python_executable=tmp_path / "missing_python",
             device="apple",
+            mlx_python=tmp_path / "missing_mlx_python",
         )
     with pytest.raises(ValueError, match="Apple MLX requires --checkpoint"):
         p.run_decoder_profile(
@@ -609,6 +654,7 @@ def test_apple_device_requires_explicit_runtime_and_bundle_before_input_access(t
             decoder_dir=tmp_path,
             python_executable=tmp_path / "missing_python",
             device="apple",
+            mlx_python=tmp_path / "missing_mlx_python",
         )
 
 
@@ -720,19 +766,24 @@ def test_profile_failed_reconstruction_remains_audited(tmp_path, receptor, monke
 def test_decoder_cache_fingerprint_includes_transitive_hla_source(tmp_path, monkeypatch):
     from tcr_workbench import report
     root = tmp_path / "decoder"
-    upstream = root / "src/DecoderTCR/utils/predict_from_genes.py"
-    upstream.parent.mkdir(parents=True)
-    upstream.write_text("# pinned upstream")
+    root.mkdir(parents=True)
     package = tmp_path / "workbench"
     package.mkdir()
     (package / "report.py").write_text("# source digest implementation")
     hla = package / "hla.py"
     hla.write_text("# HLA contract v1")
     monkeypatch.setattr(report, "__file__", str(package / "report.py"))
-    monkeypatch.setattr(p, "_environment_fingerprint", lambda *a: {"environment_sha256": "fixed"})
+    # The registry identity/environment now arrives via the environment probe;
+    # the transitive workbench adapter source is hashed separately.
+    monkeypatch.setattr(p, "_environment_fingerprint",
+                        lambda *a: {"environment_sha256": "fixed", "artifact_sha256": "a" * 64})
     first = p._decoder_fingerprint(root, sys.executable)
     assert first["workbench_adapter_sha256"] == report.source_digest()
+    # Weights are registry-resolved: no local source-checkout hash is produced.
+    assert "decoder_source_sha256" not in first and "checkpoint_sha256" not in first
+    assert first["decoder_package"] == "decodertcr_internal"
     hla.write_text("# HLA contract v2")
     second = p._decoder_fingerprint(root, sys.executable)
     assert first["workbench_adapter_sha256"] != second["workbench_adapter_sha256"]
-    assert first["decoder_source_sha256"] == second["decoder_source_sha256"]
+    # The registry artifact identity, threaded from the environment, is unchanged.
+    assert first["artifact_sha256"] == second["artifact_sha256"]

@@ -502,9 +502,9 @@ def model_report_metadata(options: dict[str, Any], execution: dict[str, Any] | N
               "Precision": execution.get("precision") or options.get("precision", "float32")}
     if fields["Precision"] == "float16":
         fields["Precision"] = "float16 (approximate)"
-    for key in ("checkpoint_sha256", "source_checkpoint_sha256", "bundle_sha256"):
+    for key in ("artifact_sha256", "checkpoint_sha256", "source_checkpoint_sha256", "bundle_sha256"):
         if execution.get(key):
-            fields["Checkpoint identity"] = execution[key]
+            fields["Model artifact identity"] = execution[key]
             break
     fields["Execution"] = execution.get("status", "Completed; inspect row-level status")
     return fields

@@ -12,8 +12,6 @@ from tcr_workbench.backends import mlx_decoder as host
 from tcr_workbench.backends import mlx_worker as w
 from tcr_workbench.backends.precision_contract import precision_metadata
 from tcr_workbench.backends.reconstruct_worker import reconstruct
-from tcr_workbench.backends.torch_decoder import checkpoint_arguments
-from tcr_workbench.backends.torch_checkpoint_worker import validate_inventory
 from tcr_workbench.cli import parser
 from tcr_workbench.model_registry import normalize_device, resolve_model, validate_backend
 
@@ -31,13 +29,14 @@ def row(name, peptide="AC", *, ok=True, extension=""):
 
 def test_registry_separates_model_size_and_backend():
     assert resolve_model("esmc-300m").name == p.DEFAULT_MODEL
-    assert resolve_model("esmc-600m").checkpoint.endswith("600M.ckpt")
+    assert resolve_model("esmc-600m").model_id == "decodertcr@1.0.0:600M"
     assert normalize_device("MLX") == "apple"
     assert normalize_device("gpu") == "cuda"
     assert validate_backend("esmc-600m", "apple", "bundle", "python").arch == "DecoderTCRC_600M"
     assert validate_backend("esmc-6b", "apple", "bundle", "python").arch == "DecoderTCRC_6B"
+    # ESM2 models/aliases were removed from the registry entirely.
     for model in ("esm2-650m", "esm2-3b"):
-        with pytest.raises(ValueError, match="ESM-C 300M, 600M and 6B architectures only"):
+        with pytest.raises(ValueError, match="unsupported model"):
             validate_backend(model, "apple", "bundle", "python")
     with pytest.raises(ValueError, match="unsupported device"):
         normalize_device("mps")
@@ -45,28 +44,6 @@ def test_registry_separates_model_size_and_backend():
         validate_backend("esmc-300m", "cpu", "bundle", "python")
     with pytest.raises(ValueError, match="unsupported model"):
         resolve_model("invented")
-
-
-def test_checkpoint_override_has_explicit_architecture(tmp_path):
-    result = checkpoint_arguments("esmc-600m", tmp_path / "custom.ckpt")
-    assert result == ["--checkpoint", str(tmp_path / "custom.ckpt"), "--backbone", "esmc",
-                      "--arch", "DecoderTCRC_600M"]
-    assert checkpoint_arguments(p.DEFAULT_MODEL, None) == []
-
-
-def test_checkpoint_size_guard_checks_actual_tensor_inventory():
-    class Tensor:
-        shape = (64, 960)
-    state = {"model.model.embed.weight": Tensor()}
-    state.update({f"model.model.transformer.blocks.{i}.weight": None for i in range(30)})
-    validate_inventory({"state_dict": state}, "DecoderTCRC_300M")
-    with pytest.raises(ValueError, match="does not match"):
-        validate_inventory({"state_dict": state}, "DecoderTCRC_600M")
-    del state["model.model.transformer.blocks.29.weight"]
-    with pytest.raises(ValueError, match="does not match"):
-        validate_inventory({"state_dict": state}, "DecoderTCRC_300M")
-    with pytest.raises(ValueError, match="Lightning"):
-        validate_inventory({}, "DecoderTCRC_300M")
 
 
 def test_decoder_cli_exposes_model_checkpoint_and_runtime():

@@ -133,12 +133,13 @@ print(json.dumps({'origin':spec.origin if spec else None,
 def fingerprint(decoder_dir, python, model, bundle, mlx_python, *, batch_size, token_budget,
                 cache_bytes, precision="float32"):
     from ..prediction import _decoder_fingerprint
+    from ..model_registry import resolve_model
     validate_options(batch_size, token_budget, cache_bytes)
     numerical = precision_metadata(precision)
     converted = bundle_fingerprint(bundle)
-    # Reuse the authoritative reconstruction/source/environment audit without
-    # requiring the 4GB PyTorch checkpoint beside a converted inference bundle.
-    upstream = _decoder_fingerprint(decoder_dir, python)
+    # Reuse the authoritative reconstruction/source/environment audit and bind the
+    # registry release identity, without loading the converted inference bundle.
+    upstream = _decoder_fingerprint(decoder_dir, python, model_id=resolve_model(model).model_id)
     return {**upstream, **converted, **runtime_fingerprint(mlx_python, Path(decoder_dir)),
             "model": model, "backend": "mlx", "device": "apple", "batch_size": batch_size,
             "token_budget": token_budget, "cache_bytes": cache_bytes,
@@ -152,10 +153,12 @@ def execute(input_path, output_path, temporary, provenance, *, timeout, profile=
     reconstructed = Path(temporary) / "reconstructed.csv"
     runtime_path = Path(temporary) / "runtime.json"
     from ..species import reconstruction_arguments, verify_biological_fingerprint
+    from ..model_registry import resolve_model
     verify_biological_fingerprint(provenance)
     _execute([provenance["python_executable"], str(workers / "reconstruct_worker.py"),
               "--input", str(input_path), "--output", str(reconstructed),
               "--context-type", provenance["context_type"],
+              "--convention", resolve_model(provenance["model"]).convention,
               *reconstruction_arguments(provenance)], root, timeout)
     command = [provenance["mlx_python_executable"], "-I", str(workers / "mlx_worker.py"),
                "--input", str(reconstructed), "--output", str(output_path),

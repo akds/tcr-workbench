@@ -130,10 +130,8 @@ def run_pmhc_backend(input_path, output_path, *, decoder_dir, python_executable,
         fingerprint = mlx_decoder.fingerprint(decoder_dir, python_executable, model,
             checkpoint, mlx_python, batch_size=batch_size, token_budget=token_budget, cache_bytes=cache_bytes, precision=precision)
     else:
-        fingerprint = _model_fingerprint(decoder_dir, python_executable, model, checkpoint=checkpoint)
-        fingerprint.update(backend="torch", device=device, dtype="float32", cache_bytes=cache_bytes)
-        if checkpoint is not None:
-            fingerprint["checkpoint_path"] = str(Path(checkpoint).resolve())
+        fingerprint = _model_fingerprint(decoder_dir, python_executable, model)
+        fingerprint.update(backend="torch", device=device, dtype="float32")
     fingerprint.update(**biology, precision=precision, approximate=precision == "float16", schema_version=1, context_type="pmhc", mode="profiles" if profile == "batch" else "profile" if profile else "scores",
                        input_sha256=file_sha256(source),
                        pmhc_adapter_sha256=hashlib.sha256(b"".join(path.read_bytes() for path in
