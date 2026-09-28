@@ -40,7 +40,7 @@ ordinary user can run the commands below directly.
 Everything runs through the repository launcher: **`python3 tcr.py`**. It creates and owns a
 managed `.tcr/` environment (its own Python 3.12, model runtime, germlines). The model code and
 weights come from the **`decodertcr_internal`** package plus a **shared registry**: setup installs
-`decodertcr_internal==0.3.1` and points it at an existing registry root, and weights are
+`decodertcr_internal==0.5.0` and points it at an existing registry root, and weights are
 **fetched and verified from that registry on first use** (on `load`/`score`). Three facts that
 shape everything:
 
@@ -93,7 +93,7 @@ and verified from it on first use, not downloaded per machine at setup.
 | `esmc-600m` | GPU or Apple; stronger on several benchmarks | — |
 | `esmc-6b` | Only a large-memory NVIDIA GPU | never on a laptop or CPU |
 
-These `esmc-*` names now map to the released **`decodertcr@1.0.0`** (300M / 600M / 6B) checkpoints,
+These `esmc-*` names now map to the released **`decodertcr@1.5.0`** (300M / 600M / 6B) checkpoints,
 which use the **V2** sequence convention. This is a model upgrade: scores and benchmarks can differ
 from the earlier V0.3 (V1) models. Don't present old numbers as current.
 
@@ -103,7 +103,7 @@ them. List what the registry actually exposes with `decodertcr models` (see Step
 
 ## Step 4 — run setup, then point at the registry
 
-Setup installs dependencies and `decodertcr_internal==0.3.1` into the managed environment. It does
+Setup installs dependencies and `decodertcr_internal==0.5.0` into the managed environment. It does
 not fetch a per-machine checkpoint, so there is no large download to gate here.
 
 ```bash
@@ -175,9 +175,9 @@ where the registry is and be able to reach it.
    ```
 
    If a release you want appears only under `--all` as archived or blocked, it is not usable as-is —
-   choose an active release (`decodertcr@1.0.0`) instead of forcing it.
+   choose an active release (`decodertcr@1.5.0`) instead of forcing it.
 
-3. **Version match.** `decodertcr_internal==0.3.1` resolves the released `decodertcr@1.0.0`
+3. **Version match.** `decodertcr_internal==0.5.0` resolves the released `decodertcr@1.5.0`
    checkpoints. If a release requires a newer package than is installed, `models`/`load` will say
    so; upgrade the package rather than editing metadata.
 
@@ -193,9 +193,9 @@ registry access.
 | "Apple setup requires macOS on Apple Silicon (arm64)" | `--device apple` on non-Apple-Silicon | use `--device cpu` |
 | "Automatic NVIDIA GPU setup targets Linux" | `--device gpu` off Linux | `--device apple` (Mac) or `--device cpu` |
 | "Setup stopped … estimated memory exceeds the available budget" | model too big for RAM/VRAM | smaller model or better hardware; `--allow-memory-risk` only with consent |
-| `ModuleNotFoundError: decodertcr_internal` / "decodertcr is not installed" | model package missing from the environment | re-run full `setup --device cpu`/`apple` (installs `decodertcr_internal==0.3.1`) |
+| `ModuleNotFoundError: decodertcr_internal` / "decodertcr is not installed" | model package missing from the environment | re-run full `setup --device cpu`/`apple` (installs `decodertcr_internal==0.5.0`) |
 | "registry not configured" / no registry root resolved | registry never pointed at | `decodertcr configure --registry <root>`, or set `DECODERTCR_REGISTRY` |
-| release shows only under `decodertcr models --all` as archived/blocked | that release is not usable as-is | choose an active release (`decodertcr@1.0.0`) |
+| release shows only under `decodertcr models --all` as archived/blocked | that release is not usable as-is | choose an active release (`decodertcr@1.5.0`) |
 | "requires a newer decodertcr" / release too new for package | package older than the release needs | upgrade `decodertcr_internal`; don't edit release metadata |
 | "Setup is needed" / `ModuleNotFoundError` at analysis time | not set up (or core-only, no model) | run `setup --device cpu` (or `apple`) |
 | `doctor` shows no model after `--core-only` | core-only intentionally skips the model runtime | re-run `setup --device cpu`/`apple`, then configure the registry |
@@ -204,7 +204,7 @@ registry access.
 
 - **Weights come from the shared registry, fetched and verified on first use; `doctor` only checks
   reachability and never downloads.** Configure the registry before first scoring.
-- **Model upgrade:** the `esmc-*` names now resolve `decodertcr@1.0.0` (V2 sequence convention).
+- **Model upgrade:** the `esmc-*` names now resolve `decodertcr@1.5.0` (V2 sequence convention).
   Scores can differ from the earlier V0.3 (V1) models; don't compare across the two.
 - **ESM2 aliases are out of scope in this build** — don't offer `esm2-650m` / `esm2-3b`.
 - **Mouse still needs `--species mouse`** on setup (installs mouse germlines) and on each analysis.

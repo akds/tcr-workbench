@@ -29,7 +29,7 @@ def row(name, peptide="AC", *, ok=True, extension=""):
 
 def test_registry_separates_model_size_and_backend():
     assert resolve_model("esmc-300m").name == p.DEFAULT_MODEL
-    assert resolve_model("esmc-600m").model_id == "decodertcr@1.0.0:600M"
+    assert resolve_model("esmc-600m").model_id == "decodertcr@1.5.0:600M"
     assert normalize_device("MLX") == "apple"
     assert normalize_device("gpu") == "cuda"
     assert validate_backend("esmc-600m", "apple", "bundle", "python").arch == "DecoderTCRC_600M"

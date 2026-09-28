@@ -21,11 +21,11 @@ MODELS = {
     name: DecoderModel(name, backbone, arch, model_id, convention, apple)
     for name, backbone, arch, model_id, convention, apple in [
         ("DecoderTCR-ESMC_300M", "esmc", "DecoderTCRC_300M",
-         "decodertcr@1.0.0:300M", "v2", True),
+         "decodertcr@1.5.0:300M", "v2", True),
         ("DecoderTCR-ESMC_600M", "esmc", "DecoderTCRC_600M",
-         "decodertcr@1.0.0:600M", "v2", True),
+         "decodertcr@1.5.0:600M", "v2", True),
         ("DecoderTCR-ESMC_6B", "esmc", "DecoderTCRC_6B",
-         "decodertcr@1.0.0:6B", "v2", True),
+         "decodertcr@1.5.0:6B", "v2", True),
     ]
 }
 ALIASES = {"esmc-300m": "DecoderTCR-ESMC_300M", "esmc-600m": "DecoderTCR-ESMC_600M",

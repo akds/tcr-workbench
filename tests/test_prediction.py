@@ -167,7 +167,7 @@ def test_registry_environment_and_output_invalidate_cache(
     environment = {
         "environment_sha256": "fake_environment",
         "germline_sha256": "fake_germline",
-        "decoder_version": "0.3.1",
+        "decoder_version": "0.5.0",
         "decoder_origin": str(root / "decodertcr_internal/__init__.py"),
         "registry_root": str(root / "registry"),
         "artifact_sha256": "a" * 64,
@@ -586,7 +586,7 @@ def test_germline_fingerprint_includes_stitchr_sibling_data(tmp_path, monkeypatc
     decoder.mkdir(parents=True)
     (decoder / "__init__.py").write_text(
         "__version__ = " + repr(p.MIN_DECODER_VERSION) + "\n"
-        "def models():\n    return ['decodertcr@1.0.0:300M']\n"
+        "def models():\n    return ['decodertcr@1.5.0:300M']\n"
     )
     (decoder / "core.py").write_text("def registry_root():\n    return 'configured-registry'\n")
     stitchr = source / "Stitchr"

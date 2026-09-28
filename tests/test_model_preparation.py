@@ -38,7 +38,7 @@ def harness(tmp_path, monkeypatch):
         # Apple parity compares its converted bundle against this exact artifact.
         artifact_sha256=preparation.file_sha256(source),
         catalog_sha256="catalog-v1",
-        model_id="decodertcr@1.0.0:300M",
+        model_id="decodertcr@1.5.0:300M",
         model_sequence_convention="v2",
     )
     mlx_identity = dict(

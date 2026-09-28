@@ -33,7 +33,7 @@ COMPONENTS = GENES + ["hla", "peptide"]
 DEFAULT_MODEL = "DecoderTCR-ESMC_300M"
 # Minimum decodertcr_internal package that publishes the registry-resolved
 # releases and sequence conventions this adapter targets.
-MIN_DECODER_VERSION = "0.3.1"
+MIN_DECODER_VERSION = "0.4.0"
 
 
 def _version_tuple(value: str) -> tuple:

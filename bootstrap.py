@@ -19,14 +19,14 @@ UV_VERSION = "0.12.17"
 # The internal package (Python 3.12) bundles the model code, stitchr germlines and
 # reconstruction references; model weights are resolved from a shared registry, not
 # downloaded here. Override the install source for a local checkout or private index.
-DECODER_PACKAGE = "decodertcr-internal==0.3.1"
+DECODER_PACKAGE = "decodertcr-internal==0.5.0"
 SETUP_ALIASES = {"esmc-300m": "DecoderTCR-ESMC_300M", "esmc-600m": "DecoderTCR-ESMC_600M",
                  "esmc-6b": "DecoderTCR-ESMC_6B"}
 # Registry model IDs for the deep probe, which runs in the model environment where
 # only decodertcr_internal (not tcr_workbench) is importable. Mirrors model_registry.
-MODEL_IDS = {"DecoderTCR-ESMC_300M": "decodertcr@1.0.0:300M",
-             "DecoderTCR-ESMC_600M": "decodertcr@1.0.0:600M",
-             "DecoderTCR-ESMC_6B": "decodertcr@1.0.0:6B"}
+MODEL_IDS = {"DecoderTCR-ESMC_300M": "decodertcr@1.5.0:300M",
+             "DecoderTCR-ESMC_600M": "decodertcr@1.5.0:600M",
+             "DecoderTCR-ESMC_6B": "decodertcr@1.5.0:6B"}
 # Parameter counts come from the exact source tensor inventories; the fp32 registry
 # artifact bytes are estimated as parameters * 4 for the pre-install memory check.
 SETUP_PARAMETER_COUNTS = {"DecoderTCR-ESMC_300M": 332997184,

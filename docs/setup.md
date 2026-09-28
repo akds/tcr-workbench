@@ -11,7 +11,7 @@ decodertcr configure --registry /path/to/decodertcr-registry
 decodertcr models   # list available releases (add --all for archived/blocked)
 ```
 
-You can instead set `DECODERTCR_REGISTRY` or write `~/.config/decodertcr/config.json`. The `esmc-300m`/`esmc-600m`/`esmc-6b` names map to `decodertcr@1.0.0` (V2 sequence convention), a model upgrade from the earlier V0.3 models. The ESM2 variants are not part of this build.
+You can instead set `DECODERTCR_REGISTRY` or write `~/.config/decodertcr/config.json`. The `esmc-300m`/`esmc-600m`/`esmc-6b` names map to `decodertcr@1.5.0` (V2 sequence convention), a model upgrade from the earlier V0.3 models. The ESM2 variants are not part of this build.
 
 ## Existing installations
 
@@ -29,7 +29,7 @@ To select a different release, list what the registry exposes and pick a model s
 decodertcr models   # active releases; add --all for archived/blocked
 ```
 
-The `esmc-300m`/`esmc-600m`/`esmc-6b` names map to the corresponding `decodertcr@1.0.0` sizes. See [models and new releases](upgrading.md). To check compatibility and resources without changing your default, use [model preparation](upgrading.md#prepare-a-release-for-use).
+The `esmc-300m`/`esmc-600m`/`esmc-6b` names map to the corresponding `decodertcr@1.5.0` sizes. See [models and new releases](upgrading.md). To check compatibility and resources without changing your default, use [model preparation](upgrading.md#prepare-a-release-for-use).
 
 ## Configuration and other models
 
@@ -56,7 +56,7 @@ Linux GPU setup requires a working NVIDIA driver and extra disk space for CUDA d
 | Message or symptom | Action |
 |---|---|
 | Environment missing | Run full `setup --device cpu` or `setup --device apple`; use `setup --core-only` for ordinary reference matching only. |
-| `decodertcr_internal` not installed | Rerun full `setup`; it installs `decodertcr_internal==0.3.1`. |
+| `decodertcr_internal` not installed | Rerun full `setup`; it installs `decodertcr_internal==0.5.0`. |
 | Registry not configured | `decodertcr configure --registry <root>`, or set `DECODERTCR_REGISTRY`. |
 | Weight fetch failed | Check registry access and disk space, then retry; cached artifacts are reused and verified. |
 | Release archived/blocked or needs a newer package | Choose an active release with `decodertcr models --all`, or upgrade `decodertcr_internal`. |

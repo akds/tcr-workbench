@@ -8,7 +8,7 @@ Use DecoderTCR 300M for a first local analysis. Larger models need more memory; 
 | 600M | `esmc-600m` | FP32 |
 | 6B | `esmc-6b` | FP32; inference untested |
 
-These flags select fine-tuned DecoderTCR models, resolved from the shared registry as `decodertcr@1.0.0` (300M/600M/6B, V2 sequence convention). This is a model upgrade from the earlier V0.3 (V1) models, so scores can differ. NVIDIA execution is untested, and Apple 6B support is experimental. The ESM2 variants are not part of this build.
+These flags select fine-tuned DecoderTCR models, resolved from the shared registry as `decodertcr@1.5.0` (300M/600M/6B, V2 sequence convention). This is a model upgrade from the earlier V0.3 (V1) models, so scores can differ. NVIDIA execution is untested, and Apple 6B support is experimental. The ESM2 variants are not part of this build.
 
 For 600M on Apple Silicon:
 
@@ -34,7 +34,7 @@ decodertcr models          # active releases
 decodertcr models --all    # also archived / blocked releases
 ```
 
-You can instead set `DECODERTCR_REGISTRY` or write `~/.config/decodertcr/config.json`. The `esmc-300m`/`esmc-600m`/`esmc-6b` names map to the corresponding `decodertcr@1.0.0` sizes. A release shown only under `--all` as archived or blocked is not usable as-is; a release requiring a newer package than `decodertcr_internal==0.3.1` needs a package upgrade, not a metadata edit.
+You can instead set `DECODERTCR_REGISTRY` or write `~/.config/decodertcr/config.json`. The `esmc-300m`/`esmc-600m`/`esmc-6b` names map to the corresponding `decodertcr@1.5.0` sizes. A release shown only under `--all` as archived or blocked is not usable as-is; a release requiring a newer package than `decodertcr_internal==0.5.0` needs a package upgrade, not a metadata edit.
 
 Weights are verified when first fetched from the registry, so a partial or wrong artifact is rejected. Cached artifacts are reused by release identity; existing results keep their original model details.
 

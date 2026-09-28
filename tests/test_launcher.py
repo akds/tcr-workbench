@@ -354,7 +354,7 @@ def test_decoder_install_uses_cpu_torch_on_linux_and_pinned_source(launcher,monk
     # source; a Linux CPU install pins the CPU Torch wheel to avoid multi-GB NVIDIA wheels.
     module,bootstrap,root=launcher
     env_dir=root/"envs/model"
-    source="decodertcr-internal==0.3.1"
+    source="decodertcr-internal==0.5.0"
     calls=[]
     monkeypatch.setattr(bootstrap.platform,"system",lambda:system)
     monkeypatch.setattr(bootstrap,"run",lambda command,**kwargs:calls.append([str(x) for x in command]))
