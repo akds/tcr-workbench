@@ -190,7 +190,8 @@ def execute(input_path, output_path, temporary, provenance, *, timeout, profile=
     current = runtime_fingerprint(provenance["mlx_python_executable"], root)
     if any(value != provenance.get(key) for key, value in current.items()):
         raise ValueError("MLX source or Python environment changed during inference")
-    upstream = _decoder_fingerprint(root, provenance["python_executable"])
+    upstream = _decoder_fingerprint(root, provenance["python_executable"],
+                                    model_id=resolve_model(provenance["model"]).model_id)
     verify_biological_fingerprint(provenance)
     if any(value != provenance.get(key) for key, value in upstream.items()):
         raise ValueError("DecoderTCR reconstruction source, environment or germlines changed during inference")

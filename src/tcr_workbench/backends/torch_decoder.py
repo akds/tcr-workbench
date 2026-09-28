@@ -57,7 +57,7 @@ def execute_torch(input_path, candidate, temporary, fingerprint, *, timeout, pro
             or runtime["mode"] != ("profiles" if profile == "batch" else "profile" if profile else "scores")
             or runtime["scored"] + runtime["unresolved"] != runtime["rows"]):
         raise ValueError("PyTorch worker returned inconsistent model/device provenance")
-    current = _decoder_fingerprint(root, fingerprint["python_executable"])
+    current = _decoder_fingerprint(root, fingerprint["python_executable"], model_id=spec.model_id)
     verify_biological_fingerprint(fingerprint)
     if any(fingerprint.get(key) != value for key, value in current.items()):
         raise ValueError("DecoderTCR reconstruction environment changed during inference")

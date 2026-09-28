@@ -14,6 +14,15 @@ from time import perf_counter
 
 import numpy as np
 
+# safetensors reports its own dtype names (e.g. "F32", "BF16"), not numpy dtypes;
+# map each to its byte width, including types numpy cannot represent (BF16, F8).
+_SAFETENSORS_DTYPE_BYTES = {
+    "F64": 8, "F32": 4, "F16": 2, "BF16": 2,
+    "I64": 8, "I32": 4, "I16": 2, "I8": 1,
+    "U64": 8, "U32": 4, "U16": 2, "U8": 1,
+    "BOOL": 1, "F8_E4M3": 1, "F8_E5M2": 1,
+}
+
 
 def _artifact_inventory(model_id):
     """Return tensor/byte inventory and identity from the registry safetensors header."""
@@ -28,9 +37,12 @@ def _artifact_inventory(model_id):
         for key in reader.keys():
             record = reader.get_slice(key)
             shape = record.get_shape()
-            dtype = np.dtype(record.get_dtype())
+            name = record.get_dtype()
+            if name not in _SAFETENSORS_DTYPE_BYTES:
+                raise ValueError(f"Unsupported safetensors dtype in artifact: {name}")
+            itemsize = _SAFETENSORS_DTYPE_BYTES[name]
             tensor_count += 1
-            parameter_bytes += int(np.prod(shape, dtype=np.int64)) * dtype.itemsize
+            parameter_bytes += int(np.prod(shape, dtype=np.int64)) * itemsize
     # The on-disk artifact bytes replace the former optimizer-inclusive ckpt storage.
     storage_bytes = int(Path(weights).stat().st_size)
     return tensor_count, parameter_bytes, storage_bytes, resolved.member["backbone"], resolved.member["arch"]
