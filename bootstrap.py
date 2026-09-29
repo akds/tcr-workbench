@@ -290,7 +290,19 @@ def prepare_setup_model(settings, state, core, env, allow_memory_risk):
 
 def setup(args, root: Path):
     state = root / ".tcr"
-    weight_source = getattr(args, "weight_source", "registry")
+    registry = args.registry or os.environ.get("DECODERTCR_REGISTRY")
+    # Resolve the weight source. An explicit --weight-source always wins. Otherwise,
+    # cpu/gpu with no configured registry defaults to released HuggingFace weights so
+    # a machine without registry access can still set up; apple stays on the registry
+    # (HuggingFace conversion for Apple is not yet supported).
+    explicit_source = getattr(args, "weight_source", None)
+    if explicit_source:
+        weight_source = explicit_source
+    elif args.device != "apple" and not registry:
+        weight_source = "huggingface"
+    else:
+        weight_source = "registry"
+    auto_hf = weight_source == "huggingface" and not explicit_source
     if weight_source == "huggingface" and args.device == "apple":
         raise ValueError("HuggingFace weights currently run on cpu or gpu only; "
                          "Apple MLX conversion from HuggingFace is not yet supported")
@@ -299,14 +311,12 @@ def setup(args, root: Path):
     if args.device == "gpu" and platform.system() != "Linux":
         raise ValueError("Automatic NVIDIA GPU setup targets Linux. Use --device apple on Apple Silicon.")
     full_setup = not args.core_only and not args.reuse_config
-    registry = args.registry or os.environ.get("DECODERTCR_REGISTRY")
     if full_setup and weight_source == "registry" and not registry:
         raise ValueError("Model setup requires --registry <root> (shared decodertcr registry) "
                          "or the DECODERTCR_REGISTRY environment variable; or use "
                          "--weight-source huggingface to pull released weights from HuggingFace")
     env = clean_env(state)
     model = SETUP_ALIASES[args.model]
-    hf_repo = resolve_hf_repo(model, args.hf_repo) if weight_source == "huggingface" else None
     with setup_lock(state):
         uv = ensure_uv(state, env)
         core = python_in(state / "envs/core")
@@ -329,6 +339,11 @@ def setup(args, root: Path):
             print("Setup complete; existing environments and registry reused.")
             return
         check_setup_resources(core, env, model, args.device, allow_memory_risk=args.allow_memory_risk)
+        hf_repo = resolve_hf_repo(model, args.hf_repo) if weight_source == "huggingface" else None
+        if auto_hf:
+            print(f"No model registry configured; defaulting to released HuggingFace weights for "
+                  f"{model} ({hf_repo}). Pass --registry for the shared registry, or --weight-source "
+                  "to choose explicitly.", flush=True)
         if weight_source == "huggingface":
             print(f"Installing {DECODER_PACKAGE} and preparing to pull weights from HuggingFace "
                   f"repo {hf_repo}. Weights download on first inference, not here.", flush=True)
@@ -408,9 +423,10 @@ def main(argv, *, root: Path) -> int:
     s.add_argument("--model", choices=tuple(SETUP_ALIASES), default="esmc-300m",
                    help="DecoderTCR architecture to configure (default: esmc-300m)")
     s.add_argument("--registry", help="Shared decodertcr registry root; or set DECODERTCR_REGISTRY")
-    s.add_argument("--weight-source", choices=("registry", "huggingface"), default="registry",
-                   help="Where weights come from: the shared registry (default, needs --registry) or "
-                   "HuggingFace via from_pretrained (cpu/gpu only; set HF_TOKEN for a private repo)")
+    s.add_argument("--weight-source", choices=("registry", "huggingface"), default=None,
+                   help="Where weights come from: 'registry' (shared decodertcr registry) or "
+                   "'huggingface' (from_pretrained, cpu/gpu only; set HF_TOKEN for a private repo). "
+                   "Default: registry when one is configured, otherwise HuggingFace")
     s.add_argument("--hf-repo", help="HuggingFace repo id for --weight-source huggingface "
                    "(default: the model's published repo)")
     s.add_argument("--hf-revision", help="Pin a HuggingFace commit/branch/tag (default: current main)")

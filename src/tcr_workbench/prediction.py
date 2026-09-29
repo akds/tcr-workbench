@@ -743,6 +743,12 @@ def _decoder_environment(python: PathLike) -> Dict[str, str]:
     # MLX on M5 otherwise permits TF32 matmul for FP32 arrays. The validated
     # Apple path requires genuine FP32 accumulation, set before importing MLX.
     environment["MLX_ENABLE_TF32"] = "0"
+    # Keep HuggingFace weight downloads inside the managed environment so an
+    # ephemeral sandbox reuses them across sessions instead of re-downloading.
+    # Set only the hub cache, not HF_HOME, so token/login discovery is unchanged
+    # (auth stays at the default HF_HOME or HF_TOKEN). Use absolute(), not
+    # resolve(), so the cache stays beside the venv, not the shared interpreter.
+    environment.setdefault("HF_HUB_CACHE", str(Path(python).absolute().parent.parent / "hf-cache"))
     return environment
 
 

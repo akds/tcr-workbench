@@ -276,12 +276,69 @@ def test_cpu_setup_installs_model_env_and_configures_registry_without_download(l
     assert probes and probes[-1][1] is True
 
 
-def test_full_setup_requires_a_registry(launcher,monkeypatch,capsys):
+def test_explicit_registry_source_requires_a_registry(launcher,monkeypatch,capsys):
+    # Asking explicitly for the registry with none configured is a clear failure,
+    # not a silent switch to another source.
     _,bootstrap,root=launcher
     monkeypatch.delenv("DECODERTCR_REGISTRY",raising=False)
     monkeypatch.setattr(bootstrap,"ensure_uv",lambda *a:pytest.fail("installation before registry validation"))
-    assert bootstrap.main(["setup","--device","cpu"],root=root) == 1
+    assert bootstrap.main(["setup","--device","cpu","--weight-source","registry"],root=root) == 1
     assert "registry" in capsys.readouterr().err.lower() and not (root/".tcr").exists()
+
+
+def _mock_full_setup(bootstrap,monkeypatch):
+    monkeypatch.setattr(bootstrap,"ensure_uv",lambda *a:["uv","--no-config"])
+    monkeypatch.setattr(bootstrap,"run",lambda cmd,**k:None)
+    def install_decoder(uv,env_dir,env,source,device="cpu"):
+        python=bootstrap.python_in(env_dir)
+        python.parent.mkdir(parents=True,exist_ok=True)
+        python.touch()
+        return python
+    monkeypatch.setattr(bootstrap,"install_decoder",install_decoder)
+    monkeypatch.setattr(bootstrap,"ensure_germlines",lambda *a,**k:None)
+    monkeypatch.setattr(bootstrap,"check_setup_resources",lambda *a,**k:None)
+
+
+def test_no_registry_defaults_to_huggingface_on_cpu(launcher,monkeypatch,capsys):
+    # With no registry configured and no explicit source, cpu setup falls back to
+    # released HuggingFace weights (announced, not silent) rather than failing.
+    _,bootstrap,root=launcher
+    monkeypatch.delenv("DECODERTCR_REGISTRY",raising=False)
+    _mock_full_setup(bootstrap,monkeypatch)
+    monkeypatch.setattr(bootstrap,"ensure_huggingface",lambda *a,**k:None)
+    monkeypatch.setattr(bootstrap,"configure_registry",lambda *a,**k:pytest.fail("no registry to configure"))
+    monkeypatch.setattr(bootstrap,"probe",lambda *a,**k:None)
+    assert bootstrap.main(["setup","--device","cpu"],root=root) == 0
+    assert "huggingface" in capsys.readouterr().out.lower()
+    saved=json.loads((root/".tcr/runtime.json").read_text())
+    assert saved["weight_source"] == "huggingface"
+    assert saved["hf_repo"] == bootstrap.MODEL_HF_REPOS["DecoderTCR-ESMC_300M"]
+
+
+def test_no_registry_default_errors_when_model_has_no_hf_repo(launcher,monkeypatch,capsys):
+    # A model without a published HuggingFace repo cannot silently default to it.
+    _,bootstrap,root=launcher
+    monkeypatch.delenv("DECODERTCR_REGISTRY",raising=False)
+    _mock_full_setup(bootstrap,monkeypatch)
+    monkeypatch.setattr(bootstrap,"ensure_huggingface",lambda *a,**k:None)
+    assert bootstrap.main(["setup","--device","cpu","--model","esmc-600m"],root=root) == 1
+    assert "huggingface" in capsys.readouterr().err.lower()
+
+
+def test_registry_is_used_when_configured_without_explicit_source(launcher,monkeypatch):
+    # When a registry is configured, it remains the default (no HuggingFace fallback).
+    _,bootstrap,root=launcher
+    registry=root/"shared registry"
+    registry.mkdir()
+    _mock_full_setup(bootstrap,monkeypatch)
+    monkeypatch.setattr(bootstrap,"ensure_huggingface",lambda *a,**k:pytest.fail("registry configured; no HuggingFace install"))
+    configured=[]
+    monkeypatch.setattr(bootstrap,"configure_registry",lambda python,reg,env:configured.append(reg))
+    monkeypatch.setattr(bootstrap,"probe",lambda *a,**k:None)
+    assert bootstrap.main(["setup","--device","cpu","--registry",str(registry)],root=root) == 0
+    assert configured == [str(registry)]
+    saved=json.loads((root/".tcr/runtime.json").read_text())
+    assert saved["weight_source"] == "registry"
 
 
 def test_huggingface_setup_installs_hf_hub_and_skips_registry(launcher,monkeypatch):

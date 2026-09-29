@@ -87,7 +87,10 @@ def test_full_setup_requires_a_registry_before_installation(bootstrap, monkeypat
     module, root = bootstrap
     monkeypatch.delenv("DECODERTCR_REGISTRY", raising=False)
     monkeypatch.setattr(module, "ensure_uv", lambda *args: pytest.fail("installation before registry validation"))
-    assert module.main(["setup", "--model", "esmc-6b", "--device", "cpu"], root=root) == 1
+    # Explicitly choosing the registry with none configured fails before any install;
+    # without an explicit source, cpu/gpu would instead default to HuggingFace.
+    assert module.main(["setup", "--model", "esmc-6b", "--device", "cpu",
+                        "--weight-source", "registry"], root=root) == 1
     assert "registry" in capsys.readouterr().err.lower()
     assert not (root / ".tcr").exists()
 
