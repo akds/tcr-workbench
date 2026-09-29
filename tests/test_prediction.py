@@ -216,7 +216,7 @@ def test_failure_does_not_replace_existing_output(tmp_path, receptor, panel, mon
     monkeypatch.setattr(
         p,
         "_model_fingerprint",
-        lambda *args: {"python_executable": sys.executable, "model": p.DEFAULT_MODEL},
+        lambda *args, **k: {"python_executable": sys.executable, "model": p.DEFAULT_MODEL},
     )
 
     def fail(*args, **kwargs):
@@ -281,7 +281,7 @@ def test_direct_profile_adapter_validates_marginals(tmp_path, receptor, monkeypa
     monkeypatch.setattr(
         p,
         "_model_fingerprint",
-        lambda *args: {"python_executable": sys.executable, "model": p.DEFAULT_MODEL},
+        lambda *args, **k: {"python_executable": sys.executable, "model": p.DEFAULT_MODEL},
     )
 
     def fake(source, candidate, temporary, fingerprint, **kwargs):
@@ -497,7 +497,7 @@ def test_direct_profile_rejects_wrong_position_coordinates(
     monkeypatch.setattr(
         p,
         "_model_fingerprint",
-        lambda *args: {"python_executable": sys.executable, "model": p.DEFAULT_MODEL},
+        lambda *args, **k: {"python_executable": sys.executable, "model": p.DEFAULT_MODEL},
     )
 
     def fake(source, candidate, temporary, fingerprint, **kwargs):
@@ -617,6 +617,84 @@ def test_decoder_device_aliases(device, canonical):
     assert p.normalize_decoder_device(device) == canonical
 
 
+def test_weight_source_descriptor_selects_source_without_cross_fallback():
+    registry = p.weight_source_descriptor("esmc-300m")
+    assert registry == {"kind": "registry", "model_id": "decodertcr@1.5.0:300M"}
+    hf = p.weight_source_descriptor("esmc-300m", "huggingface")
+    assert hf["kind"] == "huggingface" and hf["repo"].endswith("DecoderTCR-ESMC-300M-test")
+    assert hf["revision"] is None
+    override = p.weight_source_descriptor("esmc-300m", "huggingface", hf_repo="me/custom", hf_revision="abc123")
+    assert override["repo"] == "me/custom" and override["revision"] == "abc123"
+    # A model without a published repo fails closed rather than reverting to the registry.
+    with pytest.raises(ValueError, match="no HuggingFace source"):
+        p.weight_source_descriptor("esmc-600m", "huggingface")
+
+
+def test_model_fingerprint_records_weight_source(monkeypatch):
+    monkeypatch.setattr(p, "_environment_fingerprint", lambda python, root, source=None: {"src": source})
+    registry = p._model_fingerprint("/decoder", sys.executable, "esmc-300m")
+    assert registry["weight_source"] == "registry" and registry["src"]["kind"] == "registry"
+    hf = p._model_fingerprint("/decoder", sys.executable, "esmc-300m",
+                              weight_source="huggingface", hf_revision="pin1")
+    assert hf["weight_source"] == "huggingface"
+    assert hf["src"]["kind"] == "huggingface" and hf["src"]["repo"].endswith("300M-test")
+    assert hf["src"]["revision"] == "pin1"
+
+
+def _hf_metadata(tmp_path):
+    return {
+        "decoder_origin": str(tmp_path / "decodertcr_internal/__init__.py"),
+        "decoder_version": p.MIN_DECODER_VERSION_HF,
+        "germline_roots": [],
+        "packages": [["torch", "2.10.0"], ["huggingface_hub", "2.0.0"]],
+        "hf_repo": "org/repo",
+        "hf_revision": "c" * 40,
+        "hf_weights_sha256": "d" * 64,
+        "hf_weights_file": "model.safetensors",
+        "hf_size_bytes": 1332022912,
+        "hf_backbone": "esmc",
+        "hf_arch": "DecoderTCRC_300M",
+        "model_sequence_convention": "v2",
+    }
+
+
+def test_environment_fingerprint_huggingface_binds_repo_revision_and_hash(tmp_path, monkeypatch):
+    source = {"kind": "huggingface", "repo": "org/repo", "revision": None}
+    metadata = _hf_metadata(tmp_path)
+    # A HuggingFace source must not require a configured internal registry.
+    metadata["registry_error"] = "no registry configured"
+    monkeypatch.setattr(p.subprocess, "run",
+                        lambda *a, **k: SimpleNamespace(returncode=0, stdout=json.dumps(metadata)))
+    identity = p._environment_fingerprint(tmp_path / "python", tmp_path, source)
+    assert identity["hf_repo"] == "org/repo"
+    assert identity["hf_revision"] == "c" * 40
+    assert identity["hf_weights_sha256"] == "d" * 64
+    assert identity["hf_size_bytes"] == 1332022912
+    assert identity["model_sequence_convention"] == "v2"
+    # The resolved commit is bound into the environment digest.
+    baseline = identity["environment_sha256"]
+    metadata["hf_revision"] = "e" * 40
+    changed = p._environment_fingerprint(tmp_path / "python", tmp_path, source)
+    assert changed["environment_sha256"] != baseline and changed["hf_revision"] == "e" * 40
+
+
+def test_environment_fingerprint_huggingface_errors_are_actionable(tmp_path, monkeypatch):
+    source = {"kind": "huggingface", "repo": "org/repo", "revision": None}
+    metadata = _hf_metadata(tmp_path)
+    holder = {"data": metadata}
+    monkeypatch.setattr(p.subprocess, "run",
+                        lambda *a, **k: SimpleNamespace(returncode=0, stdout=json.dumps(holder["data"])))
+    # Unreachable HuggingFace weights raise a clear, actionable error.
+    unreachable = dict(metadata, hf_error="HfHubHTTPError: 404 Not Found")
+    holder["data"] = unreachable
+    with pytest.raises(ValueError, match="HuggingFace weights are not reachable"):
+        p._environment_fingerprint(tmp_path / "python", tmp_path, source)
+    # from_pretrained requires at least the 0.5.0 package.
+    holder["data"] = dict(metadata, decoder_version="0.4.0")
+    with pytest.raises(ValueError, match="too old"):
+        p._environment_fingerprint(tmp_path / "python", tmp_path, source)
+
+
 def test_apple_device_requires_explicit_runtime_and_bundle_before_input_access(tmp_path):
     # The MLX runtime is required before any input is read.
     with pytest.raises(ValueError, match="Apple MLX requires --mlx-python"):
@@ -729,7 +807,7 @@ def test_profile_overwrite_requires_force_before_model_loading(tmp_path, recepto
 
 @pytest.mark.parametrize("case", ["valid", "nonempty", "no_reason", "contradictory_counts", "no_status"])
 def test_profile_failed_reconstruction_remains_audited(tmp_path, receptor, monkeypatch, case):
-    monkeypatch.setattr(p, "_model_fingerprint", lambda *a: dict(model=p.DEFAULT_MODEL))
+    monkeypatch.setattr(p, "_model_fingerprint", lambda *a, **k: dict(model=p.DEFAULT_MODEL))
     runtime = dict(status="Unresolved", reason="TCR stitching failed", rows=1, scored=0, unresolved=1,
                    reconstruction={"tcr_ok": "False", "tcr_reason": "TCR stitching failed"})
     if case == "no_reason":

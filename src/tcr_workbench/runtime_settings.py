@@ -3,17 +3,18 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from .backends.precision_contract import Precision
-from .model_registry import normalize_device, resolve_model, validate_backend
+from .model_registry import (huggingface_repo, normalize_device, normalize_weight_source,
+                             resolve_model, validate_backend)
 
 DEFAULTS = {"precision": "float32", "model": "DecoderTCR-ESMC_300M", "device": "cpu", "batch_size": 1,
-            "token_budget": 4096, "cache_bytes": 64 * 1024 * 1024}
+            "token_budget": 4096, "cache_bytes": 64 * 1024 * 1024, "weight_source": "registry"}
 KEYS = ("precision", "decoder_dir", "python_executable", "model", "device", "checkpoint", "mlx_python",
-        "batch_size", "token_budget", "cache_bytes", "timeout")
+        "batch_size", "token_budget", "cache_bytes", "timeout", "weight_source", "hf_repo", "hf_revision")
 PATHS = {"decoder_dir", "python_executable", "checkpoint", "mlx_python"}
 
 
@@ -39,6 +40,13 @@ class RuntimeSettings(BaseModel):
     token_budget: int = Field(default=4096, ge=3, le=262144)
     cache_bytes: int = Field(default=64 * 1024 * 1024, ge=0, le=1024**3)
     timeout: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False)
+    # Registry weights are resolved by model ID; huggingface weights are pulled by
+    # from_pretrained from hf_repo (default: the model's published repo) at an
+    # optional pinned hf_revision. A HuggingFace token, when needed, is read from
+    # the HF_TOKEN environment variable and never stored in settings.
+    weight_source: Literal["registry", "huggingface"] = "registry"
+    hf_repo: Optional[str] = None
+    hf_revision: Optional[str] = None
 
 
 def resolve_settings(args):
@@ -65,6 +73,13 @@ def resolve_settings(args):
     options = RuntimeSettings.model_validate(values).model_dump()
     options["device"] = normalize_device(options["device"])
     options["model"] = resolve_model(options["model"]).name
+    options["weight_source"] = normalize_weight_source(options.get("weight_source"))
+    if options["weight_source"] == "huggingface":
+        if options["device"] == "apple":
+            raise ValueError("HuggingFace weights currently run on cpu or cuda only; "
+                             "Apple MLX conversion from HuggingFace is not yet supported")
+        # Fail closed now if no repository can be resolved for this model.
+        huggingface_repo(options["model"], options.get("hf_repo"))
     if options["device"] != "apple" and getattr(args, "mlx_python", None) is None:
         options["mlx_python"] = None
     if (options["device"] != "apple" and options.get("checkpoint")

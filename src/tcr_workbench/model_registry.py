@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
+from typing import Optional
 
 from .backends.precision_contract import precision_metadata
 
@@ -15,19 +16,26 @@ class DecoderModel:
     model_id: str
     convention: str = "v2"
     apple_supported: bool = False
+    # Optional HuggingFace source for the released fp32 safetensors. When set,
+    # `--weight-source huggingface` loads these weights via decodertcr_internal
+    # from_pretrained instead of the shared internal registry. The file name is
+    # the flat safetensors published beside a self-describing config.json.
+    hf_repo: Optional[str] = None
+    hf_file: str = "model.safetensors"
 
 
 MODELS = {
-    name: DecoderModel(name, backbone, arch, model_id, convention, apple)
-    for name, backbone, arch, model_id, convention, apple in [
+    name: DecoderModel(name, backbone, arch, model_id, convention, apple, hf_repo)
+    for name, backbone, arch, model_id, convention, apple, hf_repo in [
         ("DecoderTCR-ESMC_300M", "esmc", "DecoderTCRC_300M",
-         "decodertcr@1.5.0:300M", "v2", True),
+         "decodertcr@1.5.0:300M", "v2", True, "denilau17/DecoderTCR-ESMC-300M-test"),
         ("DecoderTCR-ESMC_600M", "esmc", "DecoderTCRC_600M",
-         "decodertcr@1.5.0:600M", "v2", True),
+         "decodertcr@1.5.0:600M", "v2", True, None),
         ("DecoderTCR-ESMC_6B", "esmc", "DecoderTCRC_6B",
-         "decodertcr@1.5.0:6B", "v2", True),
+         "decodertcr@1.5.0:6B", "v2", True, None),
     ]
 }
+WEIGHT_SOURCES = ("registry", "huggingface")
 ALIASES = {"esmc-300m": "DecoderTCR-ESMC_300M", "esmc-600m": "DecoderTCR-ESMC_600M",
            "esmc-6b": "DecoderTCR-ESMC_6B"}
 
@@ -42,6 +50,29 @@ def resolve_model(name: str) -> DecoderModel:
 def registry_model_id(name: str) -> str:
     """Return the decodertcr_internal registry model ID for a Workbench model name."""
     return resolve_model(name).model_id
+
+
+def normalize_weight_source(source) -> str:
+    """Weights come from the internal registry by default, or HuggingFace on request."""
+    value = "registry" if source is None else str(source).strip().lower()
+    if value not in WEIGHT_SOURCES:
+        raise ValueError(f"unsupported weight source {source!r}; choose one of {WEIGHT_SOURCES}")
+    return value
+
+
+def huggingface_repo(name: str, override: Optional[str] = None) -> str:
+    """Resolve the HuggingFace repo id for a model; an explicit override wins.
+
+    Fails closed when a model has no published HuggingFace source and none is
+    supplied, rather than silently falling back to the internal registry.
+    """
+    repo = (override or "").strip() or resolve_model(name).hf_repo
+    if not repo:
+        raise ValueError(
+            f"model {name} has no HuggingFace source configured; use --weight-source registry "
+            "or pass --hf-repo with an explicit repository id"
+        )
+    return repo
 
 
 def normalize_device(device: str) -> str:

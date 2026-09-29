@@ -30,6 +30,12 @@ def _decoder_options(command):
     command.add_argument("--token-budget", type=int)
     command.add_argument("--cache-bytes", type=int)
     command.add_argument("--timeout", type=float)
+    command.add_argument("--weight-source", choices=("registry", "huggingface"),
+                         help="Where model weights come from: the shared internal registry (default) "
+                         "or HuggingFace via from_pretrained (cpu/cuda only)")
+    command.add_argument("--hf-repo", help="HuggingFace repo id for --weight-source huggingface "
+                         "(default: the model's published repo). Set HF_TOKEN for a private/gated repo")
+    command.add_argument("--hf-revision", help="Pin a HuggingFace commit/branch/tag (default: current main)")
     command.add_argument("--reference-checkpoint", type=Path,
                          help="Original PyTorch checkpoint for first-use parity of an existing Apple bundle")
     command.add_argument("--allow-memory-risk", action="store_true",
@@ -39,7 +45,7 @@ def _decoder_options(command):
 def _decoder_kwargs(args):
     return {key: getattr(args, key) for key in (
         "decoder_dir", "python_executable", "model", "device", "precision", "checkpoint", "mlx_python",
-        "batch_size", "token_budget", "cache_bytes", "timeout")}
+        "batch_size", "token_budget", "cache_bytes", "timeout", "weight_source", "hf_repo", "hf_revision")}
 
 
 def _background_options(command):
@@ -372,7 +378,9 @@ def execute(args: argparse.Namespace) -> None:
             python_executable=args.python_executable, model=args.model, device=args.device, precision=args.precision,
             timeout=args.timeout, force=args.force, checkpoint=args.checkpoint,
             mlx_python=args.mlx_python, batch_size=args.batch_size,
-            token_budget=args.token_budget, cache_bytes=args.cache_bytes, **_biology_kwargs(args))
+            token_budget=args.token_budget, cache_bytes=args.cache_bytes,
+            weight_source=args.weight_source, hf_repo=args.hf_repo, hf_revision=args.hf_revision,
+            **_biology_kwargs(args))
         print(json.dumps(result, indent=2))
         return
     if command == "decoder-profile":
@@ -384,6 +392,7 @@ def execute(args: argparse.Namespace) -> None:
                 model=args.model, device=args.device, precision=args.precision, timeout=args.timeout,
                 checkpoint=args.checkpoint, mlx_python=args.mlx_python,
                 batch_size=args.batch_size, token_budget=args.token_budget, cache_bytes=args.cache_bytes,
+                weight_source=args.weight_source, hf_repo=args.hf_repo, hf_revision=args.hf_revision,
                 **_biology_kwargs(args))
             profile = pl.read_csv(out / "profile.csv")
             unresolved = execution.get("status") == "Unresolved"

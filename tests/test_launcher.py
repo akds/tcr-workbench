@@ -284,6 +284,43 @@ def test_full_setup_requires_a_registry(launcher,monkeypatch,capsys):
     assert "registry" in capsys.readouterr().err.lower() and not (root/".tcr").exists()
 
 
+def test_huggingface_setup_installs_hf_hub_and_skips_registry(launcher,monkeypatch):
+    # A HuggingFace CPU setup needs no --registry: it installs huggingface_hub,
+    # never calls configure_registry, and saves weight_source=huggingface settings.
+    _,bootstrap,root=launcher
+    monkeypatch.delenv("DECODERTCR_REGISTRY",raising=False)
+    monkeypatch.setattr(bootstrap,"ensure_uv",lambda *a:["uv","--no-config"])
+    monkeypatch.setattr(bootstrap,"run",lambda cmd,**k:None)
+    def install_decoder(uv,env_dir,env,source,device="cpu"):
+        python=bootstrap.python_in(env_dir)
+        python.parent.mkdir(parents=True,exist_ok=True)
+        python.touch()
+        return python
+    monkeypatch.setattr(bootstrap,"install_decoder",install_decoder)
+    hf_installs=[]
+    monkeypatch.setattr(bootstrap,"ensure_huggingface",lambda uv,python,env:hf_installs.append(Path(python)))
+    monkeypatch.setattr(bootstrap,"configure_registry",lambda *a,**k:pytest.fail("registry must not be configured for a HuggingFace source"))
+    monkeypatch.setattr(bootstrap,"ensure_germlines",lambda *a,**k:None)
+    monkeypatch.setattr(bootstrap,"check_setup_resources",lambda *a,**k:None)
+    probes=[]
+    monkeypatch.setattr(bootstrap,"probe",lambda settings,env,**k:probes.append(settings))
+    assert bootstrap.main(["setup","--device","cpu","--weight-source","huggingface"],root=root) == 0
+    model_env=root/".tcr/envs/model"
+    assert hf_installs == [bootstrap.python_in(model_env)]
+    saved=json.loads((root/".tcr/runtime.json").read_text())
+    assert saved["weight_source"] == "huggingface"
+    assert saved["hf_repo"] == bootstrap.MODEL_HF_REPOS["DecoderTCR-ESMC_300M"]
+    assert saved["checkpoint"] is None and saved["device"] == "cpu"
+    assert probes and probes[-1]["weight_source"] == "huggingface"
+
+
+def test_huggingface_setup_rejects_apple(launcher,monkeypatch,capsys):
+    _,bootstrap,root=launcher
+    monkeypatch.setattr(bootstrap,"ensure_uv",lambda *a:pytest.fail("no install before the apple/HuggingFace guard"))
+    assert bootstrap.main(["setup","--device","apple","--weight-source","huggingface"],root=root) == 1
+    assert "huggingface" in capsys.readouterr().err.lower() and not (root/".tcr").exists()
+
+
 def test_atomic_config_write_keeps_old_config_when_replace_fails(launcher,monkeypatch):
     _,bootstrap,root=launcher
     path=root/"runtime.json"

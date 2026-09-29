@@ -27,6 +27,12 @@ SETUP_ALIASES = {"esmc-300m": "DecoderTCR-ESMC_300M", "esmc-600m": "DecoderTCR-E
 MODEL_IDS = {"DecoderTCR-ESMC_300M": "decodertcr@1.5.0:300M",
              "DecoderTCR-ESMC_600M": "decodertcr@1.5.0:600M",
              "DecoderTCR-ESMC_6B": "decodertcr@1.5.0:6B"}
+# Published HuggingFace repositories for the fp32 safetensors, mirroring
+# model_registry. Models without a published repo cannot use --weight-source
+# huggingface unless an explicit --hf-repo is supplied.
+MODEL_HF_REPOS = {"DecoderTCR-ESMC_300M": "denilau17/DecoderTCR-ESMC-300M-test",
+                  "DecoderTCR-ESMC_600M": None,
+                  "DecoderTCR-ESMC_6B": None}
 # Parameter counts come from the exact source tensor inventories; the fp32 registry
 # artifact bytes are estimated as parameters * 4 for the pre-install memory check.
 SETUP_PARAMETER_COUNTS = {"DecoderTCR-ESMC_300M": 332997184,
@@ -143,13 +149,31 @@ def read_settings(path: Path, core: Path, env):
     return value
 
 
+HF_PROBE = ("import sys, os, json; from pathlib import Path; "
+            "import decodertcr_internal as dt; "
+            "from huggingface_hub import model_info, hf_hub_download; "
+            "assert hasattr(dt, 'from_pretrained'), 'decodertcr_internal lacks from_pretrained'; "
+            "repo=sys.argv[1]; rev=sys.argv[2] or None; tok=os.environ.get('HF_TOKEN'); "
+            "sha=model_info(repo, revision=rev, token=tok).sha; "
+            "cfg=json.loads(Path(hf_hub_download(repo,'config.json',revision=sha,token=tok)).read_text()); "
+            "print('HuggingFace source OK:', repo, sha[:12], cfg['weights_sha256'][:12], "
+            "cfg['sequence_convention'])")
+
+
 def probe(settings, env, *, deep=False):
     python = settings["python_executable"]
     run([python, "-c", GERMLINE_PROBE], env=env, capture=True)
-    # The registry must be reachable without downloading weights.
-    run([python, "-c", "import decodertcr_internal as dt; "
-         "assert dt.models(), 'no registry releases are available'; "
-         "print('decodertcr_internal', dt.__version__, 'registry OK')"], env=env)
+    huggingface = settings.get("weight_source") == "huggingface"
+    if huggingface:
+        # HuggingFace must be reachable and the config resolvable; weights are not
+        # downloaded here. from_pretrained pulls them on first inference.
+        repo = resolve_hf_repo(settings["model"], settings.get("hf_repo"))
+        run([python, "-c", HF_PROBE, repo, settings.get("hf_revision") or ""], env=env)
+    else:
+        # The registry must be reachable without downloading weights.
+        run([python, "-c", "import decodertcr_internal as dt; "
+             "assert dt.models(), 'no registry releases are available'; "
+             "print('decodertcr_internal', dt.__version__, 'registry OK')"], env=env)
     if deep:
         run([python, "-c", "import torch; import decodertcr_internal; print('PyTorch', torch.__version__)"],
             env=env)
@@ -167,7 +191,7 @@ def probe(settings, env, *, deep=False):
                     "validate_decoder_config(c,sys.argv[2]); "
                     "print('MLX Metal and bundle integrity OK:',m['checkpoint_identity'])")
             run([settings["mlx_python"], "-c", code, settings["checkpoint"], settings["model"]], env=env)
-        else:
+        elif not huggingface:
             # Confirm the exact registry release resolves and reports its identity.
             code = ("import sys; import decodertcr_internal as dt; "
                     "info=dt.info(sys.argv[1]); "
@@ -193,6 +217,19 @@ def install_decoder(uv, env_dir: Path, env, source: str, device="cpu"):
 def configure_registry(python: Path, registry: str, env):
     """Point the model environment at the shared decodertcr registry (no downloads)."""
     run([python, "-m", "decodertcr_internal.cli", "configure", "--registry", registry], env=env)
+
+
+def ensure_huggingface(uv, python: Path, env):
+    """Install huggingface_hub so from_pretrained can pull released weights on demand."""
+    run([*uv, "pip", "install", "--python", python, "huggingface_hub>=0.34"], env=env)
+
+
+def resolve_hf_repo(model: str, override):
+    repo = (override or "").strip() or MODEL_HF_REPOS.get(model)
+    if not repo:
+        raise ValueError(f"model {model} has no published HuggingFace repo; pass --hf-repo, "
+                         "or use --weight-source registry with --registry")
+    return repo
 
 
 def ensure_uv(state, env):
@@ -253,17 +290,23 @@ def prepare_setup_model(settings, state, core, env, allow_memory_risk):
 
 def setup(args, root: Path):
     state = root / ".tcr"
+    weight_source = getattr(args, "weight_source", "registry")
+    if weight_source == "huggingface" and args.device == "apple":
+        raise ValueError("HuggingFace weights currently run on cpu or gpu only; "
+                         "Apple MLX conversion from HuggingFace is not yet supported")
     if args.device == "apple" and (platform.system() != "Darwin" or platform.machine() != "arm64"):
         raise ValueError("Apple setup requires macOS on Apple Silicon (arm64); use --device cpu.")
     if args.device == "gpu" and platform.system() != "Linux":
         raise ValueError("Automatic NVIDIA GPU setup targets Linux. Use --device apple on Apple Silicon.")
     full_setup = not args.core_only and not args.reuse_config
     registry = args.registry or os.environ.get("DECODERTCR_REGISTRY")
-    if full_setup and not registry:
+    if full_setup and weight_source == "registry" and not registry:
         raise ValueError("Model setup requires --registry <root> (shared decodertcr registry) "
-                         "or the DECODERTCR_REGISTRY environment variable")
+                         "or the DECODERTCR_REGISTRY environment variable; or use "
+                         "--weight-source huggingface to pull released weights from HuggingFace")
     env = clean_env(state)
     model = SETUP_ALIASES[args.model]
+    hf_repo = resolve_hf_repo(model, args.hf_repo) if weight_source == "huggingface" else None
     with setup_lock(state):
         uv = ensure_uv(state, env)
         core = python_in(state / "envs/core")
@@ -286,12 +329,19 @@ def setup(args, root: Path):
             print("Setup complete; existing environments and registry reused.")
             return
         check_setup_resources(core, env, model, args.device, allow_memory_risk=args.allow_memory_risk)
-        print(f"Installing {DECODER_PACKAGE} and connecting to the registry at {registry}. "
-              "Model weights are resolved from the shared registry, not downloaded here.", flush=True)
+        if weight_source == "huggingface":
+            print(f"Installing {DECODER_PACKAGE} and preparing to pull weights from HuggingFace "
+                  f"repo {hf_repo}. Weights download on first inference, not here.", flush=True)
+        else:
+            print(f"Installing {DECODER_PACKAGE} and connecting to the registry at {registry}. "
+                  "Model weights are resolved from the shared registry, not downloaded here.", flush=True)
         model_env = state / "envs/model"
         model_python = install_decoder(uv, model_env, env, args.decoder_source,
                                        "cpu" if args.device == "apple" else args.device)
-        configure_registry(model_python, registry, env)
+        if weight_source == "huggingface":
+            ensure_huggingface(uv, model_python, env)
+        else:
+            configure_registry(model_python, registry, env)
         # Human reconstruction resources ship in the package; mouse still uses Stitchr.
         ensure_germlines(model_python, "human", state, env)
         if getattr(args, "species", "human") == "mouse":
@@ -299,7 +349,9 @@ def setup(args, root: Path):
         settings = dict(decoder_dir=str(model_env), python_executable=str(model_python),
                         model=model, device="cpu", precision="float32",
                         checkpoint=None, mlx_python=None, batch_size=1,
-                        token_budget=4096, cache_bytes=67108864, timeout=None)
+                        token_budget=4096, cache_bytes=67108864, timeout=None,
+                        weight_source=weight_source, hf_repo=hf_repo,
+                        hf_revision=getattr(args, "hf_revision", None))
         if args.device == "apple":
             mlx_python = python_in(state / "envs/mlx")
             if not mlx_python.is_file():
@@ -356,6 +408,12 @@ def main(argv, *, root: Path) -> int:
     s.add_argument("--model", choices=tuple(SETUP_ALIASES), default="esmc-300m",
                    help="DecoderTCR architecture to configure (default: esmc-300m)")
     s.add_argument("--registry", help="Shared decodertcr registry root; or set DECODERTCR_REGISTRY")
+    s.add_argument("--weight-source", choices=("registry", "huggingface"), default="registry",
+                   help="Where weights come from: the shared registry (default, needs --registry) or "
+                   "HuggingFace via from_pretrained (cpu/gpu only; set HF_TOKEN for a private repo)")
+    s.add_argument("--hf-repo", help="HuggingFace repo id for --weight-source huggingface "
+                   "(default: the model's published repo)")
+    s.add_argument("--hf-revision", help="Pin a HuggingFace commit/branch/tag (default: current main)")
     s.add_argument("--decoder-source", default=DECODER_PACKAGE,
                    help="pip install source for decodertcr_internal (default: the pinned release)")
     group = s.add_mutually_exclusive_group()

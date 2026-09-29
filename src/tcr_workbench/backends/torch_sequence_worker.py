@@ -33,6 +33,10 @@ def main():
     for name in ("input", "output", "runtime", "model", "device", "model-id"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--registry")
+    parser.add_argument("--weight-source", choices=("registry", "huggingface"), default="registry")
+    parser.add_argument("--hf-repo")
+    parser.add_argument("--hf-revision")
+    parser.add_argument("--hf-weights-sha256")
     parser.add_argument("--context-type", choices=("tcr-pmhc", "pmhc"), required=True)
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--profile", action="store_true")
@@ -41,9 +45,16 @@ def main():
     args = parser.parse_args()
     if args.profile_batch and args.context_type != "pmhc":
         raise ValueError("Batched profiles require MHC-only context")
+    import os
+
     import torch
     import decodertcr_internal as dt
     from decodertcr_internal import load
+    if args.weight_source == "huggingface" and not args.hf_repo:
+        raise ValueError("--weight-source huggingface requires --hf-repo")
+    if not hasattr(dt, "from_pretrained") and args.weight_source == "huggingface":
+        raise RuntimeError("installed decodertcr_internal does not provide from_pretrained; "
+                           "install a release that supports HuggingFace weights")
     if not 0 <= args.cache_size <= 65536:
         raise ValueError("cache-size must be between zero and 65536 entries")
     device = torch.device(args.device)
@@ -60,7 +71,17 @@ def main():
         nonlocal loaded, load_seconds
         if loaded is None:
             started = perf_counter()
-            loaded = load(args.model_id, device=str(device), registry=args.registry or None)
+            if args.weight_source == "huggingface":
+                loaded = dt.from_pretrained(args.hf_repo, revision=args.hf_revision or None,
+                                            device=str(device), token=os.environ.get("HF_TOKEN"))
+                # from_pretrained verifies the downloaded weights against the config
+                # hash; bind that expectation here too so a repo/config mismatch cannot
+                # pass silently through the worker boundary.
+                if (args.hf_weights_sha256
+                        and getattr(loaded, "artifact_sha256", None) != args.hf_weights_sha256):
+                    raise RuntimeError("HuggingFace weights hash does not match the expected release")
+            else:
+                loaded = load(args.model_id, device=str(device), registry=args.registry or None)
             loaded.module.eval()
             if any(parameter.is_floating_point() and parameter.dtype != torch.float32
                    for parameter in loaded.module.parameters()):
