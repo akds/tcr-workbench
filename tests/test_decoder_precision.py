@@ -58,8 +58,14 @@ def test_settings_backward_compatibility_and_explicit_cpu_override(tmp_path):
     assert resolve_settings(SimpleNamespace(config=path))["precision"] == "float16"
     with pytest.raises(ValueError, match="float16 precision"):
         resolve_settings(SimpleNamespace(config=path, device="cpu", checkpoint="weights.ckpt"))
-    options = resolve_settings(SimpleNamespace(config=path, device="cpu", checkpoint="weights.ckpt", precision="float32"))
-    assert options["precision"] == "float32" and options["mlx_python"] is None
+    # A CPU override cannot keep the saved Apple bundle checkpoint: CPU/CUDA resolve weights
+    # from the registry by model id, so a leftover checkpoint is rejected, not ignored.
+    with pytest.raises(ValueError, match="--checkpoint applies only"):
+        resolve_settings(SimpleNamespace(config=path, device="cpu", precision="float32"))
+    # A clean CPU config (no checkpoint, no MLX interpreter) resolves normally.
+    path.write_text(json.dumps(dict(decoder_dir="decoder", python_executable="python")))
+    options = resolve_settings(SimpleNamespace(config=path, device="cpu", precision="float32"))
+    assert options["precision"] == "float32" and options["mlx_python"] is None and options["checkpoint"] is None
 
 
 def test_fp16_configure_roundtrip(tmp_path, monkeypatch):

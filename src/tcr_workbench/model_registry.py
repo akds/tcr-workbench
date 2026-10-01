@@ -110,6 +110,14 @@ def validate_backend(model: str, device: str, checkpoint, mlx_python, precision:
         # need not exist yet; running inference still requires the converted bundle.
         if require_checkpoint and checkpoint is None:
             raise ValueError("Apple MLX requires --checkpoint CONVERTED_BUNDLE and --mlx-python PYTHON")
-    elif mlx_python is not None:
-        raise ValueError("--mlx-python applies only to --device apple")
+    else:
+        # CPU/CUDA always load the registry (or --weight-source huggingface) weights
+        # selected by --model. A checkpoint is silently ignored there, so reject it
+        # rather than score with weights the configuration did not actually choose.
+        if checkpoint is not None:
+            raise ValueError("--checkpoint applies only to --device apple; CPU/CUDA load the registry "
+                             "(or --weight-source huggingface) weights selected by --model. Remove "
+                             "--checkpoint and clear it from any saved settings.")
+        if mlx_python is not None:
+            raise ValueError("--mlx-python applies only to --device apple")
     return spec

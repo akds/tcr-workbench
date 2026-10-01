@@ -40,8 +40,12 @@ def test_registry_separates_model_size_and_backend():
             validate_backend(model, "apple", "bundle", "python")
     with pytest.raises(ValueError, match="unsupported device"):
         normalize_device("mps")
-    with pytest.raises(ValueError, match="applies only"):
-        validate_backend("esmc-300m", "cpu", "bundle", "python")
+    # CPU/CUDA resolve weights by model id; a checkpoint or MLX interpreter is rejected
+    # rather than silently ignored so a stale config cannot score with other weights.
+    with pytest.raises(ValueError, match="--checkpoint applies only"):
+        validate_backend("esmc-300m", "cpu", "weights.ckpt", None)
+    with pytest.raises(ValueError, match="--mlx-python applies only"):
+        validate_backend("esmc-300m", "cpu", None, "python")
     with pytest.raises(ValueError, match="unsupported model"):
         resolve_model("invented")
 

@@ -82,9 +82,9 @@ def resolve_settings(args):
         huggingface_repo(options["model"], options.get("hf_repo"))
     if options["device"] != "apple" and getattr(args, "mlx_python", None) is None:
         options["mlx_python"] = None
-    if (options["device"] != "apple" and options.get("checkpoint")
-            and Path(options["checkpoint"]).is_dir()):
-        raise ValueError("Saved checkpoint is an Apple bundle; supply --checkpoint with the matching PyTorch file for CPU/CUDA")
+    # validate_backend rejects a checkpoint on CPU/CUDA: those devices resolve weights
+    # from the registry (or HuggingFace) by model id, so an Apple bundle or any stale
+    # saved checkpoint must not silently select different weights.
     validate_backend(options["model"], options["device"], options["checkpoint"], options["mlx_python"], options["precision"])
     for key, value in options.items():
         setattr(args, key, value)

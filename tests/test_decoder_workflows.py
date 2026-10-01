@@ -264,11 +264,14 @@ def test_relative_configured_interpreters_keep_the_virtual_environment(tmp_path,
     mlx_python = tmp_path / "mlx-env/bin/python"
     mlx_python.parent.mkdir(parents=True)
     mlx_python.symlink_to(base)
-    checkpoint = tmp_path / ("bundle" if device == "apple" else "weights.ckpt")
-    checkpoint.mkdir() if device == "apple" else checkpoint.touch()
+    # CPU resolves weights by model id and rejects a checkpoint; only Apple carries a bundle.
+    checkpoint = None
+    if device == "apple":
+        checkpoint = tmp_path / "bundle"
+        checkpoint.mkdir()
     path = tmp_path / "runtime.json"
     path.write_text(json.dumps({"decoder_dir":"decoder", "python_executable":"decoder-env/bin/python",
-        "device":device, "checkpoint":checkpoint.name,
+        "device":device, "checkpoint":checkpoint.name if checkpoint else None,
         "mlx_python":"mlx-env/bin/python" if device == "apple" else None}))
     result = resolve_settings(SimpleNamespace(config=path))
     assert result["python_executable"] == str(decoder_python)

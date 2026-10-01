@@ -24,7 +24,7 @@ def _decoder_options(command):
     command.add_argument("--precision", choices=("float32", "float16"),
                          help="float32 default; float16 is approximate Apple ESM-C 300M inference")
     command.add_argument("--device", help="cpu, gpu/cuda[:N], or apple (MLX Metal)")
-    command.add_argument("--checkpoint", type=Path, help="Local PyTorch checkpoint or MLX bundle; launcher prepares Apple weights automatically")
+    command.add_argument("--checkpoint", type=Path, help="Apple MLX bundle only (launcher prepares it automatically); CPU/CUDA load registry or --weight-source huggingface weights by --model")
     command.add_argument("--mlx-python", help="MLX environment; --python remains the reconstruction environment")
     command.add_argument("--batch-size", type=int)
     command.add_argument("--token-budget", type=int)

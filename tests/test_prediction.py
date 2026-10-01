@@ -678,6 +678,16 @@ def test_environment_fingerprint_huggingface_binds_repo_revision_and_hash(tmp_pa
     assert changed["environment_sha256"] != baseline and changed["hf_revision"] == "e" * 40
 
 
+def test_sequence_convention_guard_fails_closed_on_declared_mismatch():
+    # The released models build v2 sequences; a matching or absent declaration passes.
+    p.verify_sequence_convention({"model": "DecoderTCR-ESMC_300M", "model_sequence_convention": "v2"})
+    p.verify_sequence_convention({"model": "DecoderTCR-ESMC_300M"})
+    # Weights declaring the earlier V0.3 (v1) convention must not be driven with v2
+    # sequence construction, so the fingerprint refuses rather than mixing conventions.
+    with pytest.raises(ValueError, match="convention"):
+        p.verify_sequence_convention({"model": "DecoderTCR-ESMC_300M", "model_sequence_convention": "v1"})
+
+
 def test_environment_fingerprint_huggingface_errors_are_actionable(tmp_path, monkeypatch):
     source = {"kind": "huggingface", "repo": "org/repo", "revision": None}
     metadata = _hf_metadata(tmp_path)

@@ -690,8 +690,31 @@ def _model_fingerprint(
 ) -> Dict[str, Any]:
     spec = resolve_model(model)
     source = weight_source_descriptor(model, weight_source, hf_repo, hf_revision)
-    return {"model": spec.name, "model_id": spec.model_id, "weight_source": source["kind"],
-            **_decoder_fingerprint(decoder_dir, python_executable, source=source)}
+    fingerprint = {"model": spec.name, "model_id": spec.model_id, "weight_source": source["kind"],
+                   **_decoder_fingerprint(decoder_dir, python_executable, source=source)}
+    verify_sequence_convention(fingerprint)
+    return fingerprint
+
+
+def verify_sequence_convention(fingerprint: Dict[str, Any]) -> None:
+    """Fail closed when the weights' declared convention differs from the one Workbench
+    uses to build inputs.
+
+    Reconstruction builds sequences with the static per-model ``convention`` (v2 for the
+    released decodertcr@1.5.0 models; v1 for an earlier V0.3 model). The registry and
+    HuggingFace config also declare the weights' own ``sequence_convention``. If these
+    disagree, Workbench would feed v2 sequences to a v1 model (or vice versa), so refuse
+    rather than silently mix conventions.
+    """
+    declared = fingerprint.get("model_sequence_convention")
+    if declared is None:
+        return
+    expected = resolve_model(fingerprint["model"]).convention
+    if declared != expected:
+        raise ValueError(
+            f"model {fingerprint['model']} builds sequences with the {expected!r} convention, but the "
+            f"resolved weights declare {declared!r}; the registry model entry's convention must match the "
+            "weights so V0.3 (v1) and 1.5.0 (v2) sequence constructions are never mixed.")
 
 
 def _decoder_fingerprint(
