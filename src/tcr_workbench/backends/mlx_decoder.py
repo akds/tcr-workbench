@@ -132,7 +132,7 @@ print(json.dumps({'origin':spec.origin if spec else None,
 
 def fingerprint(decoder_dir, python, model, bundle, mlx_python, *, batch_size, token_budget,
                 cache_bytes, precision="float32"):
-    from ..prediction import _decoder_fingerprint
+    from ..prediction import _decoder_fingerprint, verify_sequence_convention
     from ..model_registry import resolve_model
     validate_options(batch_size, token_budget, cache_bytes)
     numerical = precision_metadata(precision)
@@ -140,10 +140,12 @@ def fingerprint(decoder_dir, python, model, bundle, mlx_python, *, batch_size, t
     # Reuse the authoritative reconstruction/source/environment audit and bind the
     # registry release identity, without loading the converted inference bundle.
     upstream = _decoder_fingerprint(decoder_dir, python, model_id=resolve_model(model).model_id)
-    return {**upstream, **converted, **runtime_fingerprint(mlx_python, Path(decoder_dir)),
-            "model": model, "backend": "mlx", "device": "apple", "batch_size": batch_size,
-            "token_budget": token_budget, "cache_bytes": cache_bytes,
-            **numerical, "context_type": "tcr-pmhc"}
+    result = {**upstream, **converted, **runtime_fingerprint(mlx_python, Path(decoder_dir)),
+              "model": model, "backend": "mlx", "device": "apple", "batch_size": batch_size,
+              "token_budget": token_budget, "cache_bytes": cache_bytes,
+              **numerical, "context_type": "tcr-pmhc"}
+    verify_sequence_convention(result)
+    return result
 
 
 def execute(input_path, output_path, temporary, provenance, *, timeout, profile=False):

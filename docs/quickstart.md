@@ -39,14 +39,14 @@ python3 tcr.py setup --device cpu
 python3 tcr.py setup --device gpu
 ```
 
-Setup installs the `decodertcr_internal` model package and configures **DecoderTCR 300M**. It does not download a per-machine checkpoint: weights live in a shared **registry** and are fetched and verified on first use. After setup, point the model package at the registry once:
+Setup installs the `decodertcr_internal` model package and configures **DecoderTCR 300M**. It does not download a per-machine checkpoint: weights live in a shared **registry** and are fetched and verified on first use. Point setup at the registry when you run it — the registry must be reachable beforehand:
 
 ```sh
-decodertcr configure --registry /path/to/decodertcr-registry
-decodertcr models   # list available releases (add --all for archived/blocked)
+python3 tcr.py setup --device cpu --registry /path/to/decodertcr-registry
+# or export DECODERTCR_REGISTRY=/path/to/decodertcr-registry before setup
 ```
 
-You can instead set `DECODERTCR_REGISTRY` or write `~/.config/decodertcr/config.json`. Allow disk space for the fetched weights, plus Apple conversion and caches. Your device choice is saved for later commands. Moving the folder afterward requires setting up its environments again.
+Setup connects the model package to that registry for you; there is no separate `decodertcr configure` step. List releases with `decodertcr models` (add `--all` for archived/blocked). Allow disk space for the fetched weights, plus Apple conversion and caches. Your device choice is saved for later commands. Moving the folder afterward requires setting up its environments again.
 
 For mouse experiments, add `--species mouse` to setup and each analysis. NVIDIA execution and Windows setup are untested; on Windows, use WSL/Linux.
 

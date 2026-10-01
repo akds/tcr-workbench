@@ -578,6 +578,16 @@ def test_import_explicitly_marks_unreported_gene_choices(tmp_path, receptor, pan
     assert "not reported" in result["reason"][0]
 
 
+def test_sequence_convention_guard_fails_closed_on_declared_mismatch():
+    # The released models build v2 sequences; a matching or absent declaration passes.
+    p.verify_sequence_convention({"model": "DecoderTCR-ESMC_300M", "model_sequence_convention": "v2"})
+    p.verify_sequence_convention({"model": "DecoderTCR-ESMC_300M"})
+    # Weights declaring the earlier V0.3 (v1) convention must not be driven with v2
+    # sequence construction, so the fingerprint refuses rather than mixing conventions.
+    with pytest.raises(ValueError, match="convention"):
+        p.verify_sequence_convention({"model": "DecoderTCR-ESMC_300M", "model_sequence_convention": "v1"})
+
+
 def test_germline_fingerprint_includes_stitchr_sibling_data(tmp_path, monkeypatch):
     source = tmp_path / "src"
     # A minimal installed decodertcr_internal package with a configured registry,

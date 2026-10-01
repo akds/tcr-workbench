@@ -26,7 +26,7 @@ def harness(tmp_path, monkeypatch):
         model="esmc-300m",
         device="cpu",
         precision="float32",
-        checkpoint=str(source),
+        checkpoint=None,
         mlx_python=None,
         timeout=10,
     )
@@ -138,7 +138,8 @@ def assert_unpublished(h):
 def test_identical_checkpoint_runtime_reuses_preparation_without_model_call(harness):
     h = harness
     options, first = prepare(h)
-    assert options["checkpoint"] == str(h.source)
+    # CPU resolves weights from the registry artifact; no local checkpoint is carried.
+    assert options["checkpoint"] is None
     assert options["model"] == "DecoderTCR-ESMC_300M"
     assert not first["cache_hit"]
     card = json.loads(Path(first["record"]).read_text())
@@ -152,7 +153,7 @@ def test_identical_checkpoint_runtime_reuses_preparation_without_model_call(harn
 def test_plan_only_inspects_metadata_but_never_runs_fixture_or_publishes(harness):
     h = harness
     effective, result = prepare(h, plan_only=True, estimate_forwards=100)
-    assert effective["checkpoint"] == str(h.source)
+    assert effective["checkpoint"] is None
     assert result["plan_only"] and not result["prepared"] and not result["cache_hit"]
     assert result["inventory"]["parameter_bytes"] == h.parameter_bytes
     assert result["inventory"]["checkpoint_storage_bytes"] == h.checkpoint_storage_bytes
@@ -759,8 +760,6 @@ def test_explicit_prepare_cli_prints_parseable_record_without_network(harness, c
                 h.options["decoder_dir"],
                 "--python",
                 h.options["python_executable"],
-                "--checkpoint",
-                str(h.source),
                 "--state-dir",
                 str(h.state),
                 "--model-id",

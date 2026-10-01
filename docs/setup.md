@@ -2,16 +2,14 @@
 
 For a first installation, follow the [quickstart](quickstart.md). Run `python3 tcr.py doctor` to check an existing installation. Commands below run from the repository folder.
 
-Setup installs the `decodertcr_internal` model package (Python 3.12) and configures DecoderTCR 300M by default. For 600M or 6B, add `--model esmc-600m` or `--model esmc-6b`. Weights are not downloaded per machine; they come from a shared registry and are fetched and verified on first use. Setup and the first scoring run need registry access; later analyses use the locally cached weights.
-
-After setup, point the model package at the registry once:
+Setup installs the `decodertcr_internal` model package (Python 3.12) and configures DecoderTCR 300M by default. For 600M or 6B, add `--model esmc-600m` or `--model esmc-6b`. Weights are not downloaded per machine; they come from a shared registry and are fetched and verified on first use. Point setup at the registry when you run it — the registry must be reachable beforehand:
 
 ```sh
-decodertcr configure --registry /path/to/decodertcr-registry
-decodertcr models   # list available releases (add --all for archived/blocked)
+python3 tcr.py setup --device cpu --registry /path/to/decodertcr-registry
+# or export DECODERTCR_REGISTRY=/path/to/decodertcr-registry before setup
 ```
 
-You can instead set `DECODERTCR_REGISTRY` or write `~/.config/decodertcr/config.json`. The `esmc-300m`/`esmc-600m`/`esmc-6b` names map to `decodertcr@1.5.0` (V2 sequence convention), a model upgrade from the earlier V0.3 models. The ESM2 variants are not part of this build.
+Setup connects the model package to that registry for you; there is no separate `decodertcr configure` step. List releases with `decodertcr models` (add `--all` for archived/blocked). Setup and the first scoring run need registry access; later analyses use the locally cached weights. The `esmc-300m`/`esmc-600m`/`esmc-6b` names map to `decodertcr@1.5.0` (V2 sequence convention), a model upgrade from the earlier V0.3 models. The ESM2 variants are not part of this build.
 
 ## Existing installations
 
@@ -43,11 +41,12 @@ If you already have a Python 3.12 environment with `decodertcr_internal` install
 
 ```sh
 python3 tcr.py configure \
+  --decoder-dir /path/to/decodertcr-env \
   --python /path/to/decodertcr-env/bin/python \
   --model esmc-300m --device cpu --settings-out custom.json
 ```
 
-The registered environment resolves weights from its configured registry (`decodertcr configure --registry <root>` or `DECODERTCR_REGISTRY`).
+Both `--decoder-dir` (the environment root) and `--python` (its interpreter) are required. CPU/CUDA resolve weights by model id, so do not pass `--checkpoint`; the environment resolves them from its configured registry (`decodertcr configure --registry <root>` or `DECODERTCR_REGISTRY`).
 
 Linux GPU setup requires a working NVIDIA driver and extra disk space for CUDA dependencies. NVIDIA execution is untested. Apple supports 300M and 600M; 6B is experimental and needs substantial memory. See [models and upgrades](upgrading.md) before changing models.
 

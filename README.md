@@ -77,14 +77,14 @@ This requires working NVIDIA drivers. CUDA dependencies need additional disk spa
 python3 tcr.py setup --device gpu
 ```
 
-Setup installs dependencies, reference sequences and the **`decodertcr_internal`** model package (Python 3.12). It does not download a per-machine checkpoint: weights live in a shared **registry** and are fetched and verified on first use. After setup, point the model package at the registry once:
+Setup installs dependencies, reference sequences and the **`decodertcr_internal`** model package (Python 3.12). It does not download a per-machine checkpoint: weights live in a shared **registry** and are fetched and verified on first use. Point setup at the registry when you run it — the registry must be reachable beforehand:
 
 ```sh
-decodertcr configure --registry /path/to/decodertcr-registry
-decodertcr models   # list available releases (add --all for archived/blocked)
+python3 tcr.py setup --device cpu --registry /path/to/decodertcr-registry
+# or export DECODERTCR_REGISTRY=/path/to/decodertcr-registry before setup
 ```
 
-You can instead set `DECODERTCR_REGISTRY` or write `~/.config/decodertcr/config.json`. Allow disk space for the fetched weights and Apple conversion. Setup and the first scoring run need registry access; later runs use the locally cached weights without manual environment activation.
+Setup connects the model package to that registry for you; there is no separate `decodertcr configure` step. List releases with `decodertcr models` (add `--all` for archived/blocked). Allow disk space for the fetched weights and Apple conversion. Setup and the first scoring run need registry access; later runs use the locally cached weights without manual environment activation.
 
 ### 3. Run a peptide profile
 
