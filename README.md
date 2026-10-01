@@ -77,7 +77,14 @@ This requires working NVIDIA drivers. CUDA dependencies need additional disk spa
 python3 tcr.py setup --device gpu
 ```
 
-Setup installs dependencies, reference sequences and **DecoderTCR 300M**. The checkpoint download is about **4 GB**. Allow at least **12 GB of free disk space**, plus space for Apple conversion and caches. Setup needs internet access; prepared analyses run locally without manual environment activation.
+Setup installs dependencies, reference sequences and the **`decodertcr_internal`** model package (Python 3.12). It does not download a per-machine checkpoint: weights live in a shared **registry** and are fetched and verified on first use. Point setup at the registry when you run it — the registry must be reachable beforehand:
+
+```sh
+python3 tcr.py setup --device cpu --registry /path/to/decodertcr-registry
+# or export DECODERTCR_REGISTRY=/path/to/decodertcr-registry before setup
+```
+
+Setup connects the model package to that registry for you; there is no separate `decodertcr configure` step. List releases with `decodertcr models` (add `--all` for archived/blocked). Allow disk space for the fetched weights and Apple conversion. Setup and the first scoring run need registry access; later runs use the locally cached weights without manual environment activation.
 
 ### 3. Run a peptide profile
 
@@ -255,7 +262,7 @@ The exact molecule must be in the model's reference. Workbench does not guess mi
 
 ## Models and hardware
 
-Workbench uses **DecoderTCR 300M, 600M and 6B**, fine-tuned from ESM-C. The default is **DecoderTCR 300M**. Benchmarks for different V0.3 models sizes are summarized in the next section. 
+Workbench uses **DecoderTCR 300M, 600M and 6B**, fine-tuned from ESM-C, resolved from the shared registry as **`decodertcr@1.0.0`** (V2 sequence convention). The default is **DecoderTCR 300M**. This is a model upgrade from the earlier V0.3 (V1) models; scores and benchmarks can differ. Weights are fetched and verified from the registry on first use rather than downloaded per machine. The ESM2 model variants are not part of this build.
 
 | Model | CPU / NVIDIA GPU | Apple Silicon |
 |---|---|---|
@@ -265,37 +272,32 @@ Workbench uses **DecoderTCR 300M, 600M and 6B**, fine-tuned from ESM-C. The defa
 
 NVIDIA execution and 6B inference have not been tested with this tool. Default precision is FP32; our Apple 300M model also offers an optional approximate FP16 mode (`--precision float16`). Use FP16 for faster inference if local hardware resources are limited.
 
-Select DecoderTCR 300M, 600M or 6B with `--model esmc-300m`, `--model esmc-600m` or `--model esmc-6b`. These existing CLI names refer to the fine-tuned DecoderTCR variants. Select hardware independently with `--device cpu`, `--device apple` or `--device gpu`, using the matching installed runtime and weights. The launcher checks new checkpoints automatically, prepares Apple weights when needed, and stops if estimated memory exceeds the available budget.
+Select DecoderTCR 300M, 600M or 6B with `--model esmc-300m`, `--model esmc-600m` or `--model esmc-6b`. These existing CLI names refer to the fine-tuned DecoderTCR variants, now resolved as `decodertcr@1.0.0` (300M/600M/6B) from the registry. Select hardware independently with `--device cpu`, `--device apple` or `--device gpu`, using the matching installed runtime and weights. The launcher fetches and verifies registry weights on first use, prepares Apple weights when needed, and stops if estimated memory exceeds the available budget.
 
 <details>
-<summary>Use a new checkpoint or plan a larger run</summary>
+<summary>Use a different release or plan a larger run</summary>
 
-To download a newer release, copy its checkpoint URL and SHA-256 into setup:
-
-```sh
-python3 tcr.py setup --device apple --model esmc-300m \
-  --checkpoint-url 'HTTPS_DOWNLOAD_URL' --expected-sha256 SHA256
-```
-
-Use `esmc-600m` or `esmc-6b` for those sizes. Setup saves the selected weights as your default, so normal analysis commands stay the same. See [download options](docs/upgrading.md#download-a-new-release).
-
-After setup, substitute the path to your compatible checkpoint:
+List the releases the registry exposes and select one by model size:
 
 ```sh
-python3 tcr.py prepare-model --model esmc-300m --device apple \
-  --checkpoint /path/to/new-300M.ckpt
-
-python3 tcr.py prepare-model --model esmc-6b --device apple \
-  --checkpoint /path/to/6B.ckpt --plan
+decodertcr models          # active releases (add --all for archived/blocked)
 ```
 
-The second command estimates resources before preparation. Preparation does not change your saved default: include the matching `--model`, `--device` and `--checkpoint` flags on subsequent analysis commands to use those weights. New weights must match a supported architecture. Passing compatibility checks does not validate biological accuracy. See [model upgrades and memory planning](docs/upgrading.md).
+The `esmc-300m`/`esmc-600m`/`esmc-6b` names map to the corresponding `decodertcr@1.0.0` sizes. A release that appears only under `--all` as archived or blocked is not usable as-is; a release requiring a newer package than `decodertcr_internal==0.3.1` needs a package upgrade rather than metadata edits.
+
+To estimate resources before a large run, use `--plan`:
+
+```sh
+python3 tcr.py prepare-model --model esmc-6b --device apple --plan
+```
+
+Preparation checks compatibility and resources before scoring; it does not change your saved default. New weights must match a supported architecture. Passing compatibility checks does not validate biological accuracy. See [model upgrades and memory planning](docs/upgrading.md).
 
 </details>
 
 ## Published DecoderTCR benchmarks
 
-The latest benchmarks are in the [DecoderTCR benchmark README](https://github.com/Biohub/DecoderTCR). The 600M and 6B models typically perform best on most classification tasks. 300M is a useful exploratory tool. **V0.3 benchmark results are summarized below:**
+The latest benchmarks are in the [DecoderTCR benchmark README](https://github.com/Biohub/DecoderTCR). The 600M and 6B models typically perform best on most classification tasks. 300M is a useful exploratory tool. The table below reports the earlier **V0.3 (V1)** models; the shipped `decodertcr@1.0.0` **V2** models are a model upgrade and their benchmarks are being re-established. Treat the V2 figures as pending and do not read the V0.3 numbers as current V2 results.
 
 | Benchmark | Metric | 300M | 600M | 6B |
 |---|---|---:|---:|---:|

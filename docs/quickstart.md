@@ -39,7 +39,14 @@ python3 tcr.py setup --device cpu
 python3 tcr.py setup --device gpu
 ```
 
-Setup needs internet access and downloads **DecoderTCR 300M, about 4 GB**. Allow at least **12 GB of free disk space**, plus space for Apple conversion and caches. Your device choice is saved for later commands. Moving the folder afterward requires setting up its environments again.
+Setup installs the `decodertcr_internal` model package and configures **DecoderTCR 300M**. It does not download a per-machine checkpoint: weights live in a shared **registry** and are fetched and verified on first use. Point setup at the registry when you run it — the registry must be reachable beforehand:
+
+```sh
+python3 tcr.py setup --device cpu --registry /path/to/decodertcr-registry
+# or export DECODERTCR_REGISTRY=/path/to/decodertcr-registry before setup
+```
+
+Setup connects the model package to that registry for you; there is no separate `decodertcr configure` step. List releases with `decodertcr models` (add `--all` for archived/blocked). Allow disk space for the fetched weights, plus Apple conversion and caches. Your device choice is saved for later commands. Moving the folder afterward requires setting up its environments again.
 
 For mouse experiments, add `--species mouse` to setup and each analysis. NVIDIA execution and Windows setup are untested; on Windows, use WSL/Linux.
 
@@ -123,7 +130,7 @@ Use a **new `--out` folder for every run**. Keep the whole output folder when sh
 | Problem | Next step |
 |---|---|
 | `tcr.py` cannot be found | Return to the folder containing `tcr.py`. |
-| Download fails | Check internet access and disk space, then rerun setup. |
+| Weight fetch fails | Check registry access (`decodertcr models`) and disk space, then retry. |
 | Memory check stops a run | Close other large applications or use a smaller model. See [memory planning](upgrading.md#check-memory-and-rough-runtime). |
 | Apple/Metal is unavailable | Check that you have an M-series Mac, or set up CPU execution. |
 | A row is `Unresolved` | Read its reason and check the input annotations. |

@@ -1,4 +1,9 @@
-"""One-time strict checkpoint inspection and tiny synthetic forward checks."""
+"""One-time strict registry-artifact inspection and tiny synthetic forward checks.
+
+Weights are resolved from the decodertcr_internal registry by exact model ID. The
+torch backend loads the released artifact and runs a tiny synthetic forward as the
+Apple parity reference; the mlx backend runs the converted bundle.
+"""
 from __future__ import annotations
 
 import argparse
@@ -9,78 +14,70 @@ from time import perf_counter
 
 import numpy as np
 
+# safetensors reports its own dtype names (e.g. "F32", "BF16"), not numpy dtypes;
+# map each to its byte width, including types numpy cannot represent (BF16, F8).
+_SAFETENSORS_DTYPE_BYTES = {
+    "F64": 8, "F32": 4, "F16": 2, "BF16": 2,
+    "I64": 8, "I32": 4, "I16": 2, "I8": 1,
+    "U64": 8, "U32": 4, "U16": 2, "U8": 1,
+    "BOOL": 1, "F8_E4M3": 1, "F8_E5M2": 1,
+}
 
-def checkpoint_storage_bytes(value, torch):
-    """Count distinct mapped storages, including optimizer state, without reading values."""
-    containers, storages = set(), set()
-    pending = [value]
-    while pending:
-        item = pending.pop()
-        if isinstance(item, torch.Tensor):
-            storage = item.untyped_storage()
-            storages.add((storage.data_ptr(), storage.nbytes()))
-        elif isinstance(item, (dict, list, tuple)) and id(item) not in containers:
-            containers.add(id(item))
-            pending.extend(item.values() if isinstance(item, dict) else item)
-    return sum(size for _, size in storages)
+
+def _artifact_inventory(model_id):
+    """Return tensor/byte inventory and identity from the registry safetensors header."""
+    from decodertcr_internal.registry import Registry
+    from safetensors import safe_open
+
+    resolved = Registry(None).resolve(model_id)
+    weights = resolved.bundle / resolved.member["weights"]["path"]
+    tensor_count = 0
+    parameter_bytes = 0
+    with safe_open(str(weights), framework="np") as reader:
+        for key in reader.keys():
+            record = reader.get_slice(key)
+            shape = record.get_shape()
+            name = record.get_dtype()
+            if name not in _SAFETENSORS_DTYPE_BYTES:
+                raise ValueError(f"Unsupported safetensors dtype in artifact: {name}")
+            itemsize = _SAFETENSORS_DTYPE_BYTES[name]
+            tensor_count += 1
+            parameter_bytes += int(np.prod(shape, dtype=np.int64)) * itemsize
+    # The on-disk artifact bytes replace the former optimizer-inclusive ckpt storage.
+    storage_bytes = int(Path(weights).stat().st_size)
+    return tensor_count, parameter_bytes, storage_bytes, resolved.member["backbone"], resolved.member["arch"]
 
 
 def torch_fixture(args):
     import torch
-    from DecoderTCR.utils.model_zoo import resolve, load
-    from DecoderTCR.constants import ALPHABET
-    from torch_checkpoint_worker import validate_inventory
+    from decodertcr_internal import load
+    from decodertcr_internal.constants import ALPHABET
 
-    spec = resolve(args.model)
-    checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=True, mmap=True)
-    validate_inventory(checkpoint, spec.arch)
-    # Build only tensor metadata, not a second set of real model parameters.
-    with torch.device("meta"):
-        if spec.backbone == "esmc":
-            from DecoderTCR.model.DecoderTCRC import DecoderTCRC
-            empty = DecoderTCRC(spec.arch, init_weights=None, use_packed_flash=False)
-        else:
-            from DecoderTCR.model.DecoderTCR import DecoderTCR
-            empty = DecoderTCR(spec.arch, init_weights=None)
-    expected = {"model." + name: tensor for name, tensor in empty.state_dict().items()}
-    actual = checkpoint["state_dict"]
-    if set(expected) != set(actual):
-        raise ValueError(f"Checkpoint tensor keys differ: missing={sorted(set(expected)-set(actual))[:10]}, "
-                         f"unexpected={sorted(set(actual)-set(expected))[:10]}")
-    for name, reference in expected.items():
-        tensor = actual[name]
-        if (not isinstance(tensor, torch.Tensor) or tensor.layout != torch.strided
-                or tuple(tensor.shape) != tuple(reference.shape) or tensor.dtype != reference.dtype):
-            raise ValueError(f"Checkpoint tensor shape/dtype/layout differs: {name}")
-        if tensor.is_floating_point() and not args.inspect_only:
-            # Scan in bounded chunks so 6B inventories do not allocate a giant boolean tensor.
-            if not tensor.is_contiguous():
-                raise ValueError(f"Checkpoint tensor must be contiguous: {name}")
-            for chunk in tensor.view(-1).split(1024 * 1024):
-                if not torch.isfinite(chunk).all():
-                    raise ValueError(f"Non-finite checkpoint values: {name}")
-    tensor_count = len(actual)
-    parameter_bytes = sum(t.numel() * t.element_size() for t in actual.values())
-    storage_bytes = checkpoint_storage_bytes(checkpoint, torch)
+    tensor_count, parameter_bytes, storage_bytes, backbone, arch = _artifact_inventory(args.model_id)
     if args.inspect_only:
         return {"model": args.model, "tensor_count": tensor_count, "parameter_bytes": parameter_bytes,
                 "checkpoint_storage_bytes": storage_bytes,
-                "backbone": spec.backbone, "architecture": spec.arch,
+                "backbone": backbone, "architecture": arch,
                 "finite_values_checked": False, "forward_checked": False}
-    del expected, actual, empty, checkpoint
     device = torch.device(args.device)
     if device.type == "cuda" and (not torch.cuda.is_available()
             or (device.index or 0) >= torch.cuda.device_count()):
         raise ValueError("Requested CUDA device is unavailable; no CPU fallback")
     started = perf_counter()
-    model, layers = load(args.model, device=device, checkpoint=args.checkpoint,
-                         backbone=spec.backbone, arch=spec.arch)
+    loaded = load(args.model_id, device=str(device), registry=None)
+    model = loaded.module
     model.eval()
     if any(p.dtype != torch.float32 for p in model.parameters() if p.is_floating_point()):
         raise ValueError("Reference model must use float32 parameters")
     first = next(model.parameters()).device
     if first.type != device.type or (device.index is not None and first.index != device.index):
         raise ValueError("Model loaded on a different device")
+    # Scan parameters for finite values in bounded chunks.
+    for tensor in model.parameters():
+        if tensor.is_floating_point():
+            for chunk in tensor.detach().view(-1).split(1024 * 1024):
+                if not torch.isfinite(chunk).all():
+                    raise ValueError("Non-finite model parameters")
     load_seconds = perf_counter() - started
     # Real alphabet, mask, EOS and a padded mixed-length batch. No donor data.
     _, _, tokens = ALPHABET.get_batch_converter()([
@@ -89,7 +86,7 @@ def torch_fixture(args):
     ])
     started = perf_counter()
     with torch.inference_mode():
-        output = model(tokens.to(device), repr_layers=[layers], return_contacts=False)
+        output = model(tokens.to(device))
     logits = output["logits"].detach().float().cpu().numpy()
     forward_seconds = perf_counter() - started
     if not np.isfinite(logits).all():
@@ -103,7 +100,8 @@ def torch_fixture(args):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--backend", choices=("torch", "mlx"), required=True)
-    parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--checkpoint")
+    parser.add_argument("--model-id")
     parser.add_argument("--model", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--device", default="cpu")
@@ -112,11 +110,15 @@ def main():
     parser.add_argument("--precision", default="float32", choices=("float32", "float16"))
     args = parser.parse_args()
     if args.backend == "torch":
+        if not args.model_id:
+            raise ValueError("Torch preparation requires --model-id")
         if args.inspect_only:
             Path(args.output).write_text(json.dumps(torch_fixture(args), indent=2) + "\n")
             return
         tokens, logits, info = torch_fixture(args)
     else:
+        if not args.checkpoint:
+            raise ValueError("MLX preparation requires the converted --checkpoint bundle")
         os.environ["MLX_ENABLE_TF32"] = "0"
         import mlx.core as mx
         from esmc_mlx.inference import load_bundle

@@ -16,7 +16,7 @@ import polars as pl
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .decoder_pmhc import PMHCOptions
-from .model_registry import normalize_device, validate_backend, resolve_model
+from .model_registry import normalize_device, validate_backend
 from .models import InputError
 from .prediction import (_ReceptorComponents, _annotate_gene_resolution, _execute,
                          _model_fingerprint, file_sha256)
@@ -118,11 +118,10 @@ def _fingerprint(options: PMHCOptions) -> dict:
             options.checkpoint, options.mlx_python, batch_size=options.batch_size,
             token_budget=options.token_budget, cache_bytes=options.cache_bytes, precision=options.precision)
     else:
-        checkpoint = (Path(options.checkpoint).resolve() if options.checkpoint is not None else
-                      Path(options.decoder_dir).resolve() / resolve_model(options.model).checkpoint)
-        result = _model_fingerprint(options.decoder_dir, options.python_executable,
-                                    options.model, checkpoint=checkpoint)
-        result.update(checkpoint_path=str(checkpoint), backend="torch", device=options.device)
+        result = _model_fingerprint(options.decoder_dir, options.python_executable, options.model)
+        # The registry artifact hash is the reused-vector identity for torch runs.
+        result.update(backend="torch", device=options.device,
+                      checkpoint_sha256=result["artifact_sha256"])
     return {**result, "context_type": "independent-receptor-chains", "species": options.species,
             "representation": REPRESENTATION, "feature_version": FEATURE_VERSION,
             "precision": "float32", "math_precision": "float32-no-tf32"}
@@ -137,13 +136,13 @@ def _run_worker(input_path: Path, staging: Path, options: PMHCOptions, fingerpri
              root, options.timeout)
     if options.device == "apple":
         executable = fingerprint["mlx_python_executable"]
-        checkpoint = fingerprint["bundle_path"]
+        model_arguments = ["--checkpoint", fingerprint["bundle_path"]]
     else:
         executable = fingerprint["python_executable"]
-        checkpoint = fingerprint["checkpoint_path"]
+        model_arguments = ["--model-id", fingerprint["model_id"]]
     _execute([executable, "-I", str(worker), "--phase", "infer", "--input", str(reconstructed),
               "--output", str(staging), "--species", options.species, "--model", options.model,
-              "--device", options.device, "--checkpoint", checkpoint,
+              "--device", options.device, *model_arguments,
               "--checkpoint-sha256", fingerprint["checkpoint_sha256"],
               "--batch-size", str(options.batch_size), "--token-budget", str(options.token_budget)],
              root, options.timeout)

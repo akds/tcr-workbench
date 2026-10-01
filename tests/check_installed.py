@@ -13,8 +13,8 @@ def main():
     checkout = Path(__file__).resolve().parents[1]
     assert not package.is_relative_to(checkout), "Smoke test imported the source checkout"
     assert "site-packages" in package.parts, "Smoke test needs an installed wheel"
-    workers = ("reconstruct_worker.py", "torch_sequence_worker.py", "torch_checkpoint_worker.py",
-               "torch_cache.py", "mlx_worker.py", "precision_contract.py", "preparation_worker.py")
+    workers = ("reconstruct_worker.py", "torch_sequence_worker.py",
+               "mlx_worker.py", "precision_contract.py", "preparation_worker.py")
     for name in workers:
         assert (package / "backends" / name).is_file(), f"Missing packaged worker: {name}"
     assert (package / "model_preparation.py").is_file(), "Missing model preparation module"

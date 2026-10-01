@@ -1,7 +1,5 @@
-"""6B setup dispatch and resource gates, without downloads or model allocation."""
-import hashlib
+"""Setup dispatch and resource gates, without downloads or model allocation."""
 import importlib.util
-import io
 import json
 from pathlib import Path
 import shutil
@@ -28,218 +26,144 @@ def bootstrap(tmp_path, monkeypatch):
 
 
 def fake_runtime(module, root, monkeypatch):
-    decoder = root / ".tcr/DecoderTCR"
-    decoder.mkdir(parents=True)
-    (decoder / ".workbench-revision").write_text(module.DECODER_REV)
+    """Record setup subprocess/install steps; model weights are never downloaded.
+
+    There is no download function anymore: weights are resolved from the shared
+    registry on first use, so a fresh install only creates the model env, connects
+    it to the registry, and probes it.
+    """
     calls = []
     monkeypatch.setattr(module, "ensure_uv", lambda *args: ["uv"])
     monkeypatch.setattr(module, "run", lambda command, **kwargs: calls.append(list(command)))
-    monkeypatch.setattr(module, "install_decoder", lambda *args: calls.append(["install_decoder"]))
+    monkeypatch.setattr(module, "install_decoder",
+                        lambda uv, env_dir, env, source, device="cpu":
+                        calls.append(["install_decoder", str(env_dir), source, device])
+                        or module.python_in(env_dir))
+    monkeypatch.setattr(module, "configure_registry",
+                        lambda python, registry, env: calls.append(["configure_registry", str(python), registry]))
+    monkeypatch.setattr(module, "ensure_germlines", lambda *args, **kwargs: None)
     monkeypatch.setattr(module, "probe", lambda settings, *args, **kwargs: calls.append(["probe", settings]))
-    monkeypatch.setattr(module, "download", lambda *args: pytest.fail("6B setup downloaded model bytes"))
     return calls
 
 
-def local_fixture(module, root, monkeypatch):
-    checkpoint = root / "arbitrary checkpoint filename.ckpt"
-    checkpoint.write_bytes(b"small synthetic fixture; never used for inference")
-    model, artifact, _, _ = module.SETUP_MODELS["esmc-6b"]
-    monkeypatch.setitem(module.SETUP_MODELS, "esmc-6b", (
-        model, artifact, hashlib.sha256(checkpoint.read_bytes()).hexdigest(), checkpoint.stat().st_size))
-    return checkpoint
-
-
-def test_6b_rejects_missing_local_file_before_installation(bootstrap, monkeypatch, capsys):
-    module, root = bootstrap
-    monkeypatch.setattr(module, "ensure_uv", lambda *args: pytest.fail("installation started"))
-    flags = ["setup", "--model", "esmc-6b", "--checkpoint", str(root / "missing.ckpt")]
-    assert module.main(flags, root=root) == 1
-    assert not (root / ".tcr").exists()
-    assert "checkpoint" in capsys.readouterr().err
-
-
 @pytest.mark.parametrize("device", ["cpu", "apple"])
-def test_6b_setup_uses_pinned_content_and_correct_backend(bootstrap, monkeypatch, device):
+def test_full_setup_installs_model_env_and_connects_registry_by_backend(bootstrap, monkeypatch, device):
     module, root = bootstrap
+    registry = root / "shared registry"
+    registry.mkdir()
     calls = fake_runtime(module, root, monkeypatch)
-    checkpoint = local_fixture(module, root, monkeypatch)
     monkeypatch.setattr(module.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(module.platform, "machine", lambda: "arm64")
     monkeypatch.setattr(module, "check_setup_resources", lambda *args, **kwargs:
                         calls.append(["resources", args[2], args[3], kwargs["allow_memory_risk"]]))
-    flags = ["setup", "--device", device, "--model", "esmc-6b", "--checkpoint", str(checkpoint),
+    monkeypatch.setattr(module, "prepare_setup_model", lambda settings, *args:
+                        dict(settings, checkpoint=str(root / ".tcr/prepared/bundle")))
+    flags = ["setup", "--device", device, "--model", "esmc-6b", "--registry", str(registry),
              "--allow-memory-risk"]
     assert module.main(flags, root=root) == 0
+    # The memory gate runs before any model environment is installed.
     guard = ["resources", "DecoderTCR-ESMC_6B", device, True]
-    assert calls.index(guard) < calls.index(["install_decoder"])
+    install = ["install_decoder", str(root / ".tcr/envs/model"), module.DECODER_PACKAGE,
+               "cpu" if device == "apple" else device]
+    assert calls.index(guard) < calls.index(install)
+    # The freshly installed model interpreter is pointed at the shared registry.
+    model_python = str(module.python_in(root / ".tcr/envs/model"))
+    assert ["configure_registry", model_python, str(registry)] in calls
+    # Torch CPU settings carry no local checkpoint; weights are registry-resolved.
     cpu = json.loads((root / ".tcr/runtime-cpu.json").read_text())
-    assert (cpu["model"], cpu["device"], cpu["checkpoint"]) == (
-        "DecoderTCR-ESMC_6B", "cpu", str(checkpoint))
+    assert (cpu["model"], cpu["device"], cpu["checkpoint"]) == ("DecoderTCR-ESMC_6B", "cpu", None)
+    assert cpu["decoder_dir"] == str(root / ".tcr/envs/model")
     selected = json.loads((root / ".tcr/runtime.json").read_text())
     assert selected["device"] == device and selected["precision"] == "float32"
-    conversion = [command for command in calls if any("convert_weights.py" in str(x) for x in command)]
     if device == "apple":
-        assert len(conversion) == 1
-        command = conversion[0]
-        assert command[command.index("--model-size") + 1] == "6b"
-        assert command[command.index("--expected-sha256") + 1] == module.SETUP_MODELS["esmc-6b"][2]
-        assert command[command.index("--output") + 1] == root / ".tcr/models/decoder-6b-fp32"
-        assert Path(selected["checkpoint"]).name == "decoder-6b-fp32"
+        # Apple converts and parity-checks a local MLX bundle from the registry artifact.
+        assert Path(selected["checkpoint"]).name == "bundle"
+        assert (root / ".tcr/runtime-apple.json").exists()
     else:
-        assert conversion == []
+        assert selected["checkpoint"] is None
 
 
-@pytest.mark.parametrize("corruption", [b"different size", b"X"])
-def test_6b_setup_rejects_unpinned_local_bytes(bootstrap, monkeypatch, capsys, corruption):
+def test_full_setup_requires_a_registry_before_installation(bootstrap, monkeypatch, capsys):
     module, root = bootstrap
-    fake_runtime(module, root, monkeypatch)
-    checkpoint = local_fixture(module, root, monkeypatch)
-    original = checkpoint.read_bytes()
-    checkpoint.write_bytes(corruption if len(corruption) > 1 else corruption * len(original))
+    monkeypatch.delenv("DECODERTCR_REGISTRY", raising=False)
+    monkeypatch.setattr(module, "ensure_uv", lambda *args: pytest.fail("installation before registry validation"))
+    assert module.main(["setup", "--model", "esmc-6b", "--device", "cpu"], root=root) == 1
+    assert "registry" in capsys.readouterr().err.lower()
+    assert not (root / ".tcr").exists()
+
+
+def test_registry_from_environment_is_accepted(bootstrap, monkeypatch):
+    module, root = bootstrap
+    registry = root / "env registry"
+    registry.mkdir()
+    calls = fake_runtime(module, root, monkeypatch)
     monkeypatch.setattr(module, "check_setup_resources", lambda *args, **kwargs: None)
-    assert module.main(["setup", "--model", "esmc-6b", "--checkpoint", str(checkpoint)], root=root) == 1
-    assert "pinned DecoderTCR-ESMC_6B" in capsys.readouterr().err
-    assert not list((root / ".tcr").glob("runtime*.json"))
+    monkeypatch.setenv("DECODERTCR_REGISTRY", str(registry))
+    assert module.main(["setup", "--device", "cpu"], root=root) == 0
+    assert any(call[0] == "configure_registry" and call[2] == str(registry) for call in calls)
 
 
 def test_blocked_setup_preserves_configuration_and_stops_before_model_install(bootstrap, monkeypatch):
     module, root = bootstrap
+    registry = root / "registry"
+    registry.mkdir()
     calls = fake_runtime(module, root, monkeypatch)
-    checkpoint = local_fixture(module, root, monkeypatch)
     config = root / ".tcr/runtime.json"
+    config.parent.mkdir(parents=True, exist_ok=True)
     config.write_text("previous configuration")
 
     def blocked(*args, **kwargs):
         raise subprocess.CalledProcessError(1, ["resource-check"])
 
     monkeypatch.setattr(module, "check_setup_resources", blocked)
-    assert module.main(["setup", "--model", "esmc-6b", "--checkpoint", str(checkpoint)], root=root) == 1
-    assert ["install_decoder"] not in calls
-    assert not any("convert_weights.py" in str(command) for command in calls)
+    assert module.main(["setup", "--model", "esmc-6b", "--registry", str(registry)], root=root) == 1
+    assert not any(call[0] == "install_decoder" for call in calls)
+    assert not any(call[0] == "configure_registry" for call in calls)
     assert config.read_text() == "previous configuration"
     assert not (root / ".tcr/setup.lock").exists()
 
 
-def test_core_only_6b_selection_does_not_require_a_checkpoint_or_check_model_memory(bootstrap, monkeypatch):
+def test_core_only_6b_selection_does_not_install_model_or_check_model_memory(bootstrap, monkeypatch):
     module, root = bootstrap
-    fake_runtime(module, root, monkeypatch)
+    calls = fake_runtime(module, root, monkeypatch)
     monkeypatch.setattr(module, "check_setup_resources", lambda *args, **kwargs: pytest.fail("model resource check"))
     assert module.main(["setup", "--core-only", "--model", "esmc-6b"], root=root) == 0
+    assert not any(call[0] in ("install_decoder", "configure_registry") for call in calls)
     assert not list((root / ".tcr").glob("runtime*.json"))
 
 
-@pytest.mark.parametrize("flags", [
-    ["--checkpoint-url", ""],
-    ["--checkpoint", "", "--expected-sha256", "a" * 64],
-    ["--checkpoint-url", "https://example.invalid/release.ckpt"],
-    ["--checkpoint-url", "https://example.invalid/release.ckpt", "--expected-sha256", "invalid"],
-    ["--checkpoint-url", "http://example.invalid/release.ckpt", "--expected-sha256", "a" * 64],
-    ["--checkpoint-url", "https://user:secret@example.invalid/release.ckpt", "--expected-sha256", "a" * 64],
-    ["--expected-sha256", "a" * 64],
-    ["--core-only", "--checkpoint-url", "https://example.invalid/release.ckpt", "--expected-sha256", "a" * 64],
-    ["--reuse-config", "runtime.json", "--checkpoint-url", "https://example.invalid/release.ckpt",
-     "--expected-sha256", "a" * 64],
-])
-def test_custom_checkpoint_options_fail_before_installation(bootstrap, monkeypatch, flags):
+def test_removed_checkpoint_options_are_rejected_by_the_parser(bootstrap):
+    # Downloaded/local checkpoints were replaced by the shared registry; the old
+    # checkpoint flags no longer exist and argparse rejects them (exit code 2).
     module, root = bootstrap
-    monkeypatch.setattr(module, "ensure_uv", lambda *args: pytest.fail("installation started"))
-    assert module.main(["setup", *flags], root=root) == 1
+    for flags in (["--checkpoint", "weights.ckpt"], ["--checkpoint-url", "https://example.invalid/w.ckpt"],
+                  ["--expected-sha256", "a" * 64]):
+        with pytest.raises(SystemExit) as excinfo:
+            module.main(["setup", *flags], root=root)
+        assert excinfo.value.code == 2
     assert not (root / ".tcr").exists()
 
 
-@pytest.mark.parametrize("model", ["esmc-300m", "esmc-600m", "esmc-6b"])
-@pytest.mark.parametrize("device", ["cpu", "gpu", "apple"])
-def test_future_releases_download_prepare_and_save_selected_defaults(bootstrap, monkeypatch, model, device):
+def test_full_setup_failure_preserves_saved_defaults(bootstrap, monkeypatch):
     module, root = bootstrap
-    real_download = module.download
-    calls = fake_runtime(module, root, monkeypatch)
-    monkeypatch.setattr(module, "download", real_download)
-    monkeypatch.setattr(module.platform, "system", lambda: "Linux" if device == "gpu" else "Darwin")
-    monkeypatch.setattr(module.platform, "machine", lambda: "arm64")
-    monkeypatch.setattr(module, "check_setup_resources", lambda *args, **kwargs:
-                        calls.append(["resources", kwargs]))
-    downloads = []
-    body = b"synthetic V1.5 checkpoint"
-
-    def open_url(request, **kwargs):
-        downloads.append(request.full_url)
-        return io.BytesIO(body)
-
-    monkeypatch.setattr(module.urllib.request, "urlopen", open_url)
-    preparations = []
-
-    def prepare(settings, state, core, env, digest, allow):
-        assert Path(settings["checkpoint"]).read_bytes() == body
-        preparations.append((dict(settings), digest, allow))
-        if device == "apple":
-            return dict(settings, checkpoint=str(state / "prepared" / digest / "bundle"))
-        return settings
-
-    monkeypatch.setattr(module, "prepare_setup_model", prepare)
-    checkpoints = []
-    for version in ("v1.5", "v1.6"):
-        body = f"synthetic {version} {model} checkpoint".encode()
-        digest = hashlib.sha256(body).hexdigest()
-        url = f"https://github.com/Biohub/DecoderTCR/releases/download/{version}/{model}.ckpt"
-        flags = ["setup", "--device", device, "--model", model, "--checkpoint-url", url,
-                 "--expected-sha256", digest.upper(), "--allow-memory-risk"]
-        assert module.main(flags, root=root) == 0
-        checkpoint = root / ".tcr/checkpoints" / model / digest / "weights.ckpt"
-        assert checkpoint.read_bytes() == body
-        checkpoints.append(checkpoint)
-        saved = json.loads((root / ".tcr/runtime.json").read_text())
-        assert saved["model"] == module.SETUP_MODELS[model][0]
-        assert saved["device"] == ("cuda" if device == "gpu" else device)
-        assert saved["checkpoint"] == (str(root / ".tcr/prepared" / digest / "bundle")
-                                       if device == "apple" else str(checkpoint))
-        cpu = json.loads((root / ".tcr/runtime-cpu.json").read_text())
-        assert cpu["device"] == "cpu" and cpu["checkpoint"] == str(checkpoint)
-        assert preparations[-1][1:] == (digest, True)
-        assert module.main(flags, root=root) == 0  # Reuse verified bytes without network.
-    assert len(downloads) == 2
-    assert checkpoints[0] != checkpoints[1] and all(path.is_file() for path in checkpoints)
-    assert next(i for i, call in enumerate(calls) if call[0] == "resources") < calls.index(["install_decoder"])
-    assert not any("convert_weights.py" in str(command) for command in calls)
-    previous = (root / ".tcr/runtime.json").read_bytes()
-    checkpoints[-1].write_bytes(b"corrupted cached download")
-    assert module.main(flags, root=root) == 1
-    assert (root / ".tcr/runtime.json").read_bytes() == previous and len(downloads) == 2
-
-
-@pytest.mark.parametrize("failure", ["checksum", "compatibility"])
-def test_future_release_failure_preserves_saved_defaults(bootstrap, monkeypatch, failure):
-    module, root = bootstrap
+    registry = root / "registry"
+    registry.mkdir()
     fake_runtime(module, root, monkeypatch)
+    monkeypatch.setattr(module.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(module.platform, "machine", lambda: "arm64")
     monkeypatch.setattr(module, "check_setup_resources", lambda *args, **kwargs: None)
-    checkpoint = root / "release.ckpt"
-    checkpoint.write_bytes(b"synthetic checkpoint")
-    digest = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+    (root / ".tcr").mkdir(parents=True, exist_ok=True)
     for name in ("runtime.json", "runtime-cpu.json", "runtime-apple.json", "runtime-gpu.json"):
         (root / ".tcr" / name).write_text("previous configuration")
 
     def prepare(*args):
-        assert failure == "compatibility"
-        raise ValueError("Checkpoint architecture does not match selected model")
+        raise ValueError("Apple bundle architecture/tokenizer does not match")
 
     monkeypatch.setattr(module, "prepare_setup_model", prepare)
-    assert module.main(["setup", "--checkpoint", str(checkpoint), "--expected-sha256",
-                        digest if failure == "compatibility" else "0" * 64], root=root) == 1
+    assert module.main(["setup", "--device", "apple", "--model", "esmc-6b", "--registry", str(registry)],
+                       root=root) == 1
     assert all(path.read_text() == "previous configuration" for path in (root / ".tcr").glob("runtime*.json"))
     assert not (root / ".tcr/setup.lock").exists()
-
-
-def test_local_future_checkpoint_becomes_default_without_copying_or_download(bootstrap, monkeypatch):
-    module, root = bootstrap
-    fake_runtime(module, root, monkeypatch)
-    checkpoint = root / "new release.ckpt"
-    checkpoint.write_bytes(b"synthetic newer weights")
-    digest = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
-    monkeypatch.setattr(module, "check_setup_resources", lambda *args, **kwargs: None)
-    monkeypatch.setattr(module, "prepare_setup_model", lambda settings, *args: settings)
-    assert module.main(["setup", "--checkpoint", str(checkpoint), "--expected-sha256", digest], root=root) == 0
-    saved = json.loads((root / ".tcr/runtime.json").read_text())
-    assert saved["checkpoint"] == str(checkpoint)
-    assert not (root / ".tcr/checkpoints").exists()
 
 
 def test_setup_preparation_uses_existing_model_checks(bootstrap, monkeypatch):
@@ -247,10 +171,10 @@ def test_setup_preparation_uses_existing_model_checks(bootstrap, monkeypatch):
 
     module, root = bootstrap
     seen = []
-    settings = {"checkpoint": "raw.ckpt", "model": "DecoderTCR-ESMC_600M", "device": "apple"}
+    settings = {"checkpoint": None, "model": "DecoderTCR-ESMC_600M", "device": "apple"}
 
-    def prepare(options, state, **kwargs):
-        seen.append((options, state, kwargs))
+    def prepare(options, prepared, **kwargs):
+        seen.append((options, prepared, kwargs))
         return dict(options, checkpoint="prepared/bundle"), {}
 
     monkeypatch.setattr(model_preparation, "prepare_model", prepare)
@@ -260,10 +184,10 @@ def test_setup_preparation_uses_existing_model_checks(bootstrap, monkeypatch):
         exec(compile(command[2], "setup-preparation", "exec"), {})
 
     monkeypatch.setattr(module, "run", execute)
-    prepared = module.prepare_setup_model(settings, root, Path(sys.executable), {}, "a" * 64, True)
+    prepared = module.prepare_setup_model(settings, root, Path(sys.executable), {}, True)
     assert prepared == dict(settings, checkpoint="prepared/bundle")
-    assert seen == [(settings, str(root / "prepared"), dict(expected_sha256="a" * 64,
-                                                           allow_memory_risk=True, sequence_length=64))]
+    assert seen == [(settings, str(root / "prepared"),
+                     dict(allow_memory_risk=True, sequence_length=64))]
     assert not list(root.glob("model-setup-*"))
 
 
@@ -292,20 +216,25 @@ def test_setup_resource_estimates_use_resident_parameters_and_separate_phases(
     module.check_setup_resources(Path(sys.executable), {}, "DecoderTCR-ESMC_6B", device,
                                  allow_memory_risk=allow)
     assert [(item[1], item[2]) for item in seen] == expected
-    assert all(item[0] == 25_408_020_736 for item in seen)
-    assert all(item[0] != module.SETUP_MODELS["esmc-6b"][3] for item in seen)
+    parameter_bytes = module.SETUP_PARAMETER_COUNTS["DecoderTCR-ESMC_6B"] * 4
+    assert parameter_bytes == 25_408_020_736
+    assert all(item[0] == parameter_bytes for item in seen)
     for _, _, backend, kwargs in seen:
         expected_kwargs = dict(batch_size=2, sequence_length=64, allow_memory_risk=allow)
         if backend == "torch":
-            expected_kwargs["checkpoint_storage_bytes"] = module.SETUP_MODELS["esmc-6b"][3]
+            # The fp32 registry artifact bytes are estimated as parameters * 4.
+            expected_kwargs["checkpoint_storage_bytes"] = parameter_bytes
         assert kwargs == expected_kwargs
 
 
-def test_300m_setup_budgets_optimizer_checkpoint_storage_separately(bootstrap, monkeypatch):
+def test_300m_apple_setup_budgets_cpu_and_apple_phases_separately(bootstrap, monkeypatch):
+    # Apple setup plans the CPU reference/conversion phase and the Apple inference phase
+    # independently. The heavier CPU reference phase can block on capacity that still
+    # fits the Apple shared-memory inference phase; the gate stops before installation.
     module, _ = bootstrap
     real_plan = resources.plan_resources
     hardware = resources.HardwareMetrics(host_total_bytes=16 * resources.GIB,
-                                         host_available_bytes=5 * resources.GIB)
+                                         host_available_bytes=3221225472)  # 3 GiB
     plans = []
 
     def plan(*args, **kwargs):
@@ -321,18 +250,14 @@ def test_300m_setup_budgets_optimizer_checkpoint_storage_separately(bootstrap, m
 
     monkeypatch.setattr(module, "run", execute)
     parameter_bytes = module.SETUP_PARAMETER_COUNTS["DecoderTCR-ESMC_300M"] * 4
-    without_storage = real_plan(parameter_bytes, "cpu", batch_size=2, sequence_length=64,
-                                hardware=hardware)
-    assert not without_storage.blocked
     with pytest.raises(SystemExit, match="stopped before model installation/conversion"):
         module.check_setup_resources(Path(sys.executable), {}, "DecoderTCR-ESMC_300M", "apple")
     cpu, apple = plans
-    assert cpu.blocked and cpu.estimated_peak_bytes > without_storage.estimated_peak_bytes
+    assert cpu.blocked and not apple.blocked
     assert cpu.parameter_bytes == apple.parameter_bytes == parameter_bytes
-    assert cpu.checkpoint_storage_bytes == module.MODEL_SIZE
-    assert not apple.blocked
-    assert apple.estimated_peak_bytes == real_plan(parameter_bytes, "apple", "mlx", batch_size=2,
-                                                  sequence_length=64, hardware=hardware).estimated_peak_bytes
+    # The CPU/torch phase reserves the fp32 registry artifact bytes (parameters * 4).
+    assert cpu.backend == "torch" and cpu.checkpoint_storage_bytes == parameter_bytes
+    assert apple.backend == "mlx" and cpu.estimated_peak_bytes > apple.estimated_peak_bytes
 
 
 @pytest.mark.parametrize("allow", [False, True])

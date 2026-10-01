@@ -1,8 +1,9 @@
 """Bounded upstream PyTorch scoring of explicitly reconstructed HLA/TCR sequences.
 
-An already loaded module is passed to DecoderTCR.score; this avoids its implicit
-CUDA-to-CPU fallback. Context type is explicit and never inferred from missing
-TCR columns. Model weights are loaded once, only if at least one row can score.
+Weights are resolved from the decodertcr_internal registry by exact model ID; an
+already loaded LoadedModel is reused for every row. Context type is explicit and
+never inferred from missing TCR columns: absent chains are passed as empty
+sequences. Model weights are loaded once, only if at least one row can score.
 """
 from __future__ import annotations
 
@@ -11,15 +12,17 @@ import csv
 from itertools import islice
 import json
 import math
-from pathlib import Path
 from time import perf_counter
+from pathlib import Path
 
 
 AA = "ACDEFGHIKLMNPQRSTVWY"
 
 
 def sequence_entry(row, context_type):
-    entry = {"HLA_a": row["HLA_a"], "HLA_b": row["HLA_b"], "Peptide": row["peptide"]}
+    """Return a prepared five-chain entry; absent chains are explicit empties."""
+    entry = {"HLA_a": row["HLA_a"], "HLA_b": row["HLA_b"], "Peptide": row["peptide"],
+             "TCR_a": "", "TCR_b": ""}
     if context_type == "tcr-pmhc":
         entry.update(TCR_a=row["TCR_a"], TCR_b=row["TCR_b"])
     return entry
@@ -27,59 +30,47 @@ def sequence_entry(row, context_type):
 
 def main():
     parser = argparse.ArgumentParser()
-    for name in ("input", "output", "runtime", "model", "device"):
+    for name in ("input", "output", "runtime", "model", "device", "model-id"):
         parser.add_argument("--" + name, required=True)
-    parser.add_argument("--checkpoint")
+    parser.add_argument("--registry")
     parser.add_argument("--context-type", choices=("tcr-pmhc", "pmhc"), required=True)
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--profile", action="store_true")
     modes.add_argument("--profile-batch", action="store_true")
-    parser.add_argument("--cache-bytes", type=int, default=67108864)
+    parser.add_argument("--cache-size", type=int, default=256)
     args = parser.parse_args()
     if args.profile_batch and args.context_type != "pmhc":
         raise ValueError("Batched profiles require MHC-only context")
     import torch
-    import DecoderTCR as dt
-    from DecoderTCR.utils.model_zoo import load, resolve
-    from torch_checkpoint_worker import validate_inventory
-    from torch_cache import wrap_scoring_model
-    if not 0 <= args.cache_bytes <= 1024 ** 3:
-        raise ValueError("cache-bytes must be between zero and 1GiB")
+    import decodertcr_internal as dt
+    from decodertcr_internal import load
+    if not 0 <= args.cache_size <= 65536:
+        raise ValueError("cache-size must be between zero and 65536 entries")
     device = torch.device(args.device)
     if device.type == "cuda" and (not torch.cuda.is_available()
             or (device.index is not None and device.index >= torch.cuda.device_count())):
         raise RuntimeError("requested CUDA device is unavailable; CPU fallback is disabled")
     if device.type not in ("cuda", "cpu"):
         raise ValueError("PyTorch workflow requires cpu or cuda")
-    spec = resolve(args.model)
-    checkpoint = Path(args.checkpoint) if args.checkpoint else spec.ckpt_path
-    model = None
-    layers = None
+    loaded = None
     load_seconds = 0.0
     inference_seconds = 0.0
-    cache = None
 
     def get_model():
-        nonlocal model, layers, load_seconds, cache
-        if model is None:
+        nonlocal loaded, load_seconds
+        if loaded is None:
             started = perf_counter()
-            inventory = torch.load(checkpoint, map_location="cpu", weights_only=True, mmap=True)
-            validate_inventory(inventory, spec.arch)
-            del inventory
-            model, layers = load(args.model, device=device, checkpoint=checkpoint,
-                                 backbone=spec.backbone, arch=spec.arch)
-            model.eval()
+            loaded = load(args.model_id, device=str(device), registry=args.registry or None)
+            loaded.module.eval()
             if any(parameter.is_floating_point() and parameter.dtype != torch.float32
-                   for parameter in model.parameters()):
+                   for parameter in loaded.module.parameters()):
                 raise RuntimeError("PyTorch workflow requires actual float32 model parameters")
-            actual_device = next(model.parameters()).device
+            actual_device = next(loaded.module.parameters()).device
             if (actual_device.type != device.type
                     or (device.index is not None and actual_device.index != device.index)):
                 raise RuntimeError("upstream model is on a different device; fallback is disabled")
-            if not (args.profile or args.profile_batch):
-                model, cache = wrap_scoring_model(model, args.cache_bytes, torch)
             load_seconds = perf_counter() - started
-        return model, layers
+        return loaded
 
     counts = {"rows": 0, "scored": 0, "unresolved": 0}
     with open(args.input, newline="", encoding="utf-8") as source, open(
@@ -91,12 +82,10 @@ def main():
 
             def infer_profile(row):
                 nonlocal inference_seconds
-                mdl, n = get_model()
+                model = get_model()
                 started = perf_counter()
-                with torch.inference_mode():
-                    frame = dt.peptide_profile(sequence_entry(row, "pmhc"),
-                        length=len(row["peptide"]), model=mdl, num_layers=n,
-                        device=device, from_genes=False)
+                frame = dt.peptide_profile(sequence_entry(row, "pmhc"),
+                    len(row["peptide"]), model=model, input_format="prepared")
                 inference_seconds += perf_counter() - started
                 return frame.reset_index().sort_values("position")[list(AA)].to_numpy()
 
@@ -112,12 +101,10 @@ def main():
                 counts.update(unresolved=1, status="Unresolved",
                               reason="; ".join(row.get(key, "") for key in ("hla_reason", "tcr_reason")))
             else:
-                mdl, n = get_model()
+                model = get_model()
                 started = perf_counter()
-                with torch.inference_mode():
-                    frame = dt.peptide_profile(sequence_entry(row, args.context_type),
-                        length=len(row["peptide"]), model=mdl, num_layers=n,
-                        device=device, from_genes=False)
+                frame = dt.peptide_profile(sequence_entry(row, args.context_type),
+                    len(row["peptide"]), model=model, input_format="prepared")
                 frame.reset_index()[["position"] + list(AA)].to_csv(target, index=False)
                 inference_seconds += perf_counter() - started
                 counts.update(scored=1, status="ModelHypothesis")
@@ -138,11 +125,11 @@ def main():
                         else:
                             valid.append((row, entry))
                 if valid:
-                    mdl, n = get_model()
+                    model = get_model()
                     started = perf_counter()
-                    with torch.inference_mode():
-                        scores = dt.score([entry for _, entry in valid], model=mdl, num_layers=n,
-                            device=device, with_tcr=args.context_type == "tcr-pmhc", return_dataframe=False)
+                    scored = model.score([entry for _, entry in valid], mask_region="peptide",
+                                         input_format="prepared", cache_size=args.cache_size)
+                    scores = scored["pll"].tolist()
                     inference_seconds += perf_counter() - started
                     if len(scores) != len(valid):
                         raise ValueError("upstream returned incorrect score count")
@@ -160,9 +147,9 @@ def main():
         "mode": "profiles" if args.profile_batch else "profile" if args.profile else "scores",
         "context_type": args.context_type, "dtype": "float32", "model_load_seconds": load_seconds,
         "inference_seconds": inference_seconds,
-        "real_model_forwards": cache.forwards if cache is not None else counts["scored"],
-        "cache_hits": cache.hits if cache is not None else 0,
-        "peak_cache_bytes": cache.peak_bytes if cache is not None else 0,
+        "real_model_forwards": counts["scored"],
+        "cache_hits": 0,
+        "peak_cache_bytes": 0,
         **counts}, indent=2) + "\n")
 
 

@@ -2,7 +2,14 @@
 
 For a first installation, follow the [quickstart](quickstart.md). Run `python3 tcr.py doctor` to check an existing installation. Commands below run from the repository folder.
 
-Setup installs DecoderTCR 300M by default. For 600M or 6B, add `--model esmc-600m` or `--model esmc-6b`. Setup needs internet access; prepared analyses use local files.
+Setup installs the `decodertcr_internal` model package (Python 3.12) and configures DecoderTCR 300M by default. For 600M or 6B, add `--model esmc-600m` or `--model esmc-6b`. Weights are not downloaded per machine; they come from a shared registry and are fetched and verified on first use. Point setup at the registry when you run it — the registry must be reachable beforehand:
+
+```sh
+python3 tcr.py setup --device cpu --registry /path/to/decodertcr-registry
+# or export DECODERTCR_REGISTRY=/path/to/decodertcr-registry before setup
+```
+
+Setup connects the model package to that registry for you; there is no separate `decodertcr configure` step. List releases with `decodertcr models` (add `--all` for archived/blocked). Setup and the first scoring run need registry access; later analyses use the locally cached weights. The `esmc-300m`/`esmc-600m`/`esmc-6b` names map to `decodertcr@1.5.0` (V2 sequence convention), a model upgrade from the earlier V0.3 models. The ESM2 variants are not part of this build.
 
 ## Existing installations
 
@@ -12,15 +19,15 @@ To reuse existing Workbench settings and model files:
 python3 tcr.py setup --reuse-config /path/to/cpu.json --reuse-config /path/to/apple.json
 ```
 
-The last configuration becomes the default. The referenced environments and weights must remain in place.
+The last configuration becomes the default. The referenced environments must remain in place; weights are resolved from the shared registry.
 
-To reuse a downloaded copy of the released 300M checkpoint while installing the other components:
+To select a different release, list what the registry exposes and pick a model size:
 
 ```sh
-python3 tcr.py setup --device apple --checkpoint /path/to/300M.ckpt
+decodertcr models   # active releases; add --all for archived/blocked
 ```
 
-For newer weights, use setup with `--checkpoint-url` and `--expected-sha256`. See [download a new release](upgrading.md#download-a-new-release). To check a local checkpoint without changing your default, use [model preparation](upgrading.md#prepare-a-local-checkpoint).
+The `esmc-300m`/`esmc-600m`/`esmc-6b` names map to the corresponding `decodertcr@1.5.0` sizes. See [models and new releases](upgrading.md). To check compatibility and resources without changing your default, use [model preparation](upgrading.md#prepare-a-release-for-use).
 
 ## Configuration and other models
 
@@ -30,14 +37,16 @@ Setup saves defaults in `.tcr/runtime.json`; command flags override them. To sel
 python3 tcr.py --config /path/to/custom.json pmhc-score --panel examples/panel.csv --out results/custom
 ```
 
-If you already installed DecoderTCR separately, register its paths:
+If you already have a Python 3.12 environment with `decodertcr_internal` installed, register it:
 
 ```sh
-python3 tcr.py configure --decoder-dir /path/to/DecoderTCR \
-  --python /path/to/DecoderTCR/.venv/bin/python \
-  --model DecoderTCR-ESMC_300M --device cpu \
-  --checkpoint /path/to/300M.ckpt --settings-out custom.json
+python3 tcr.py configure \
+  --decoder-dir /path/to/decodertcr-env \
+  --python /path/to/decodertcr-env/bin/python \
+  --model esmc-300m --device cpu --settings-out custom.json
 ```
+
+Both `--decoder-dir` (the environment root) and `--python` (its interpreter) are required. CPU/CUDA resolve weights by model id, so do not pass `--checkpoint`; the environment resolves them from its configured registry (`decodertcr configure --registry <root>` or `DECODERTCR_REGISTRY`).
 
 Linux GPU setup requires a working NVIDIA driver and extra disk space for CUDA dependencies. NVIDIA execution is untested. Apple supports 300M and 600M; 6B is experimental and needs substantial memory. See [models and upgrades](upgrading.md) before changing models.
 
@@ -46,8 +55,10 @@ Linux GPU setup requires a working NVIDIA driver and extra disk space for CUDA d
 | Message or symptom | Action |
 |---|---|
 | Environment missing | Run full `setup --device cpu` or `setup --device apple`; use `setup --core-only` for ordinary reference matching only. |
-| Download failed | Check internet access and disk space, then rerun setup. Completed downloads are reused. |
-| Checksum mismatch | Move the named damaged file aside, then rerun setup. |
+| `decodertcr_internal` not installed | Rerun full `setup`; it installs `decodertcr_internal==0.5.0`. |
+| Registry not configured | `decodertcr configure --registry <root>`, or set `DECODERTCR_REGISTRY`. |
+| Weight fetch failed | Check registry access and disk space, then retry; cached artifacts are reused and verified. |
+| Release archived/blocked or needs a newer package | Choose an active release with `decodertcr models --all`, or upgrade `decodertcr_internal`. |
 | Setup lock exists | Check that no other setup is running. If it stopped, remove `.tcr/setup.lock` and rerun. |
 | Metal unavailable | Use an Apple Silicon Mac with working Metal access, or set up CPU execution. |
 | Germline download failed | Check access to IMGT and rerun setup for the intended species. |

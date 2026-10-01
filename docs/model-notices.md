@@ -1,12 +1,12 @@
 # Licenses and data sources
 
-Workbench code is [MIT licensed](../LICENSE). Model weights, dependencies and reference data retain their own terms; they are downloaded separately during setup.
+Workbench code is [MIT licensed](../LICENSE). Model weights, dependencies and reference data retain their own terms. Weights are provided by the `decodertcr_internal` package through a shared registry and fetched on first use; they are not bundled with this repository.
 
 ## DecoderTCR models and Apple support
 
-The default weights for DecoderTCR 300M, 600M and 6B are pinned to the `biohub/DecoderTCR` V0.3 release. The release metadata declares MIT. Newer and custom checkpoints retain the terms supplied with those weights.
+The weights for DecoderTCR 300M, 600M and 6B are resolved from the shared registry as `decodertcr@1.5.0` (V2 sequence convention), a model upgrade from the earlier V0.3 (V1) models. The release metadata declares MIT. Other and custom releases retain the terms supplied with those weights.
 
-The Apple implementation adapts code or model conventions from MLX-LM, Biohub/esm, DecoderTCR and Meta ESM. Their source revisions and required notices are retained in [THIRD_PARTY_NOTICES.md](../esmc-mlx/THIRD_PARTY_NOTICES.md), the [license directory](../esmc-mlx/licenses/) and [source pins](../esmc-mlx/references/sources.json). Keep these notices when redistributing the code or converted weights.
+The Apple implementation adapts code or model conventions from MLX-LM, Biohub/esm, DecoderTCR and Meta ESM. Their source revisions and required notices are retained in [THIRD_PARTY_NOTICES.md](../esmc-mlx/THIRD_PARTY_NOTICES.md), the [license directory](../esmc-mlx/licenses/) and [source pins](../esmc-mlx/references/sources.json). The Apple bundle is converted from the registry `.safetensors` artifact. Keep these notices when redistributing the code or converted weights.
 
 ## TCR reconstruction data
 

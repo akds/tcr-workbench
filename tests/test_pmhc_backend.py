@@ -9,7 +9,6 @@ from tcr_workbench import prediction as p
 from tcr_workbench.backends import mlx_worker as w
 from tcr_workbench.backends import pmhc_decoder as backend
 from tcr_workbench.backends.reconstruct_worker import exact_hla_key, reconstruct_pmhc
-from tcr_workbench.backends.torch_cache import OutputCache
 
 
 @pytest.mark.parametrize("hla,key", [
@@ -135,16 +134,3 @@ def test_pmhc_input_never_accepts_label_or_tcr_columns(tmp_path):
     pl.DataFrame({"name": ["a"], "peptide": ["AC"], "hla": ["HLA-A*02:01"], "label": [1]}).write_csv(source)
     with pytest.raises(ValueError, match="only name"):
         backend.validate_input(source)
-
-
-def test_torch_output_cache_byte_bound_eviction_and_disabled_mode():
-    cache = OutputCache(1800)
-    first, second = (b"first token sequence",), (b"second token sequence",)
-    cache.put(first, "one", 1000)
-    assert cache.get(first) == "one"
-    cache.put(second, "two", 1000)
-    assert cache.get(first) is None and cache.get(second) == "two"
-    assert cache.bytes <= 1800 and cache.peak_bytes <= 1800
-    disabled = OutputCache(0)
-    disabled.put(first, "one", 1000)
-    assert disabled.get(first) is None and disabled.bytes == 0

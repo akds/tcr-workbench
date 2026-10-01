@@ -1,4 +1,4 @@
-# Models and new checkpoints
+# Models and new releases
 
 Use DecoderTCR 300M for a first local analysis. Larger models need more memory; compare their [published benchmarks](../README.md#published-decodertcr-benchmarks) for your task.
 
@@ -8,7 +8,7 @@ Use DecoderTCR 300M for a first local analysis. Larger models need more memory; 
 | 600M | `esmc-600m` | FP32 |
 | 6B | `esmc-6b` | FP32; inference untested |
 
-These flags select fine-tuned DecoderTCR models. NVIDIA execution is untested, and Apple 6B support is experimental.
+These flags select fine-tuned DecoderTCR models, resolved from the shared registry as `decodertcr@1.5.0` (300M/600M/6B, V2 sequence convention). This is a model upgrade from the earlier V0.3 (V1) models, so scores can differ. NVIDIA execution is untested, and Apple 6B support is experimental. The ESM2 variants are not part of this build.
 
 For 600M on Apple Silicon:
 
@@ -22,50 +22,47 @@ Use `--device cpu` or `--device gpu` for those installations. For 6B:
 python3 tcr.py setup --device apple --model esmc-6b
 ```
 
-The 6B file is about 25 GB. FP32 weights alone occupy about **23.7 GiB of memory**; loading, Apple preparation and inference need additional memory. Setup checks available memory before downloading. For weights already on disk, use the planning command below before preparation.
+The 6B model is large: FP32 weights alone occupy about **23.7 GiB of memory**, and loading, Apple preparation and inference need more. Weights come from the registry and are fetched and verified on first use; the launcher checks available memory before loading. Use the planning command below before a large run.
 
-## Download a new release
+## Select a registry release
 
-Use the download URL and SHA-256 supplied with the release, including GitHub release assets:
-
-```sh
-python3 tcr.py setup --device apple --model esmc-300m \
-  --checkpoint-url 'HTTPS_DOWNLOAD_URL' --expected-sha256 SHA256
-```
-
-Replace both placeholders with the publisher's values. Choose `esmc-600m` or `esmc-6b` for those sizes, and `cpu` or `gpu` for other hardware. Version tags and checkpoint filenames can change; Workbench uses the exact URL you supply.
-
-Setup verifies the checksum, checks model compatibility and prepares Apple weights when needed. It saves the selected model and weights as your default. Run your usual analysis commands afterward. Downloads and prepared weights are cached separately by checkpoint identity; existing results keep their original model details. Setup without these options uses the pinned V0.3 release.
-
-To install a release you already downloaded, replace `--checkpoint-url` with `--checkpoint /path/to/model.ckpt` and keep `--expected-sha256`.
-
-## Prepare a local checkpoint
-
-After installing the matching runtime:
+Weights are resolved from the shared registry, not downloaded per machine. Point the model package at the registry once, then list what it exposes:
 
 ```sh
-python3 tcr.py prepare-model --model esmc-300m --device apple \
-  --checkpoint /path/to/new-300M.ckpt
+decodertcr configure --registry /path/to/decodertcr-registry
+decodertcr models          # active releases
+decodertcr models --all    # also archived / blocked releases
 ```
 
-This checks compatibility and prepares Apple weights when needed. Preparation also runs automatically before an analysis with new weights. The first run can take several minutes; later runs reuse the prepared files. If the checkpoint provider supplies a checksum, add `--expected-sha256 PROVIDER_HASH`.
+You can instead set `DECODERTCR_REGISTRY` or write `~/.config/decodertcr/config.json`. The `esmc-300m`/`esmc-600m`/`esmc-6b` names map to the corresponding `decodertcr@1.5.0` sizes. A release shown only under `--all` as archived or blocked is not usable as-is; a release requiring a newer package than `decodertcr_internal==0.5.0` needs a package upgrade, not a metadata edit.
 
-Preparation does not change your saved default. Include the same model, device and checkpoint on subsequent commands:
+Weights are verified when first fetched from the registry, so a partial or wrong artifact is rejected. Cached artifacts are reused by release identity; existing results keep their original model details.
+
+## Prepare a release for use
+
+After installing the matching runtime and configuring the registry:
+
+```sh
+python3 tcr.py prepare-model --model esmc-300m --device apple
+```
+
+This fetches and verifies the registry weights, checks compatibility and prepares Apple weights (converted from the registry `.safetensors` artifact) when needed. Preparation also runs automatically before an analysis with new weights. The first run can take several minutes; later runs reuse the prepared files.
+
+Preparation does not change your saved default. Include the same model and device on subsequent commands:
 
 ```sh
 python3 tcr.py pmhc-score --model esmc-300m --device apple \
-  --checkpoint /path/to/new-300M.ckpt --panel examples/panel.csv --out results/new-model
+  --panel examples/panel.csv --out results/new-model
 ```
 
-Keep the original PyTorch checkpoint after Apple conversion. If using an existing Apple bundle and its original checkpoint cannot be found, provide `--reference-checkpoint /path/to/original.ckpt`. CPU and NVIDIA execution require the original checkpoint.
+The Apple bundle is produced from the registry `.safetensors` artifact. If a prepared Apple bundle's source artifact cannot be resolved, ensure the registry is reachable so it can be re-fetched. CPU and NVIDIA execution use the registry weights directly.
 
 ## Check memory and rough runtime
 
 Estimate resource requirements before loading a large model:
 
 ```sh
-python3 tcr.py prepare-model --model esmc-6b --device apple \
-  --checkpoint /path/to/6B.ckpt --plan
+python3 tcr.py prepare-model --model esmc-6b --device apple --plan
 ```
 
 `--plan` estimates requirements without running inference or converting weights. Apple preparation also needs memory for the CPU comparison. A model that fits during inference may still be too large to prepare on that machine.
@@ -84,4 +81,4 @@ Here, 1000 means model evaluations for distinct contexts, not individual peptide
 
 New weights must match a supported DecoderTCR architecture. Successful preparation checks that the model can run; it does not establish prediction accuracy. Choose weights trained for the intended species and compare results on representative inputs before adopting a new release.
 
-To use a separately installed DecoderTCR version, provide `--decoder-dir` and `--python` for that installation. See [configuration](setup.md#configuration-and-other-models) to save it in a separate settings file. Existing result folders retain the model details from their original run.
+To use a separately installed `decodertcr_internal` environment, provide `--python` for that installation. See [configuration](setup.md#configuration-and-other-models) to save it in a separate settings file. Existing result folders retain the model details from their original run.

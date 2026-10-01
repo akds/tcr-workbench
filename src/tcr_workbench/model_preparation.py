@@ -88,14 +88,13 @@ class AppleProof(TimingProof):
 
 
 def _identity(options):
-    checkpoint = Path(options["checkpoint"])
-    identity = {**_decoder_fingerprint(options["decoder_dir"], options["python_executable"]),
+    spec = resolve_model(options["model"])
+    identity = {**_decoder_fingerprint(options["decoder_dir"], options["python_executable"],
+                                       model_id=spec.model_id),
                 "model": options["model"], "device": options["device"], "precision": options["precision"]}
-    if checkpoint.is_dir():
-        identity.update(mlx_decoder.bundle_fingerprint(checkpoint))
-    else:
-        identity.update(checkpoint_sha256=file_sha256(checkpoint), checkpoint_path=str(checkpoint))
     if options["device"] == "apple":
+        # The converted bundle is a preparation OUTPUT; the registry artifact hash
+        # (already in the decoder fingerprint) is the source identity for reuse.
         identity.update(mlx_decoder.runtime_fingerprint(options["mlx_python"], Path(options["decoder_dir"])))
     return identity
 
@@ -115,48 +114,38 @@ def _lock(path):
         path.unlink(missing_ok=True)
 
 
-def _reference_checkpoint(options, state, source_hash, supplied=None):
-    if supplied:
-        candidates = [Path(supplied).absolute()]
-    else:
-        candidates = [Path(options["decoder_dir"]) / resolve_model(options["model"]).checkpoint]
-        # A later setup may change runtime-cpu.json while retaining this Apple
-        # bundle. Its preparation record still identifies the original weights.
-        record = Path(options["checkpoint"]).parent / "prepared.json"
-        if record.is_file():
-            card = PreparedModel.model_validate_json(record.read_text())
-            original = card.fingerprint.get("checkpoint_path")
-            if card.checkpoint == str(Path(options["checkpoint"]).absolute()) and isinstance(original, str):
-                candidates.append(Path(original))
-        config = state.parent / "runtime-cpu.json"
-        if config.is_file():
-            from .runtime_settings import RuntimeSettings, _unique_keys
-            value = RuntimeSettings.model_validate(json.loads(config.read_text(), object_pairs_hook=_unique_keys))
-            if value.checkpoint:
-                candidates.append((config.parent / value.checkpoint).absolute())
-    for candidate in candidates:
-        if candidate.is_file() and file_sha256(candidate) == source_hash:
-            return candidate
-    raise ValueError("Apple preparation requires the matching original PyTorch checkpoint for parity. "
-                     "Pass the raw checkpoint as --checkpoint, or add --reference-checkpoint PATH.")
+def _registry_artifact_path(options, model_id):
+    """Resolve the registry safetensors path in the model environment for conversion."""
+    with tempfile.TemporaryDirectory(prefix="tcr-artifact-") as folder:
+        output = Path(folder) / "artifact.txt"
+        code = ("import sys; from decodertcr_internal.registry import Registry; "
+                "r=Registry(None).resolve(sys.argv[1]); "
+                "open(sys.argv[2],'w').write(str(r.bundle / r.member['weights']['path']))")
+        _execute([options["python_executable"], "-c", code, model_id, str(output)],
+                 Path(options["decoder_dir"]), options.get("timeout"))
+        return Path(output.read_text().strip())
 
 
-def _fixture(options, checkpoint, output, *, backend, reference=None):
+def _fixture(options, output, *, backend, checkpoint=None, reference=None):
     worker = Path(__file__).parent / "backends/preparation_worker.py"
     python = options["mlx_python"] if backend == "mlx" else options["python_executable"]
     device = "cpu" if options["device"] == "apple" else options["device"]
-    command = [python, str(worker), "--backend", backend, "--checkpoint", str(checkpoint),
+    command = [python, str(worker), "--backend", backend,
                "--model", options["model"], "--device", device, "--output", str(output),
                "--precision", options["precision"]]
+    if backend == "torch":
+        command += ["--model-id", resolve_model(options["model"]).model_id]
+    else:
+        command += ["--checkpoint", str(checkpoint)]
     if reference is not None:
         command += ["--reference", str(reference)]
     _execute(command, Path(options["decoder_dir"]), options.get("timeout"))
 
 
-def _inspect(options, checkpoint, output):
-    """Memory-map storage and validate metadata; do not allocate or run a model."""
+def _inspect(options, output):
+    """Read the registry artifact header for inventory; do not build or run a model."""
     command = [options["python_executable"], str(Path(__file__).parent / "backends/preparation_worker.py"),
-               "--backend", "torch", "--inspect-only", "--checkpoint", str(checkpoint),
+               "--backend", "torch", "--inspect-only", "--model-id", resolve_model(options["model"]).model_id,
                "--model", options["model"], "--output", str(output)]
     _execute(command, Path(options["decoder_dir"]), options.get("timeout"))
     info = InventoryProof.model_validate_json(output.read_text())
@@ -282,10 +271,10 @@ def _cached(path, fingerprint):
         card = PreparedModel.model_validate_json(path.read_text())
         if card.fingerprint != fingerprint:
             return None
-        expected_checkpoint = (fingerprint.get("bundle_path") or
-            (str(path.parent / "bundle") if fingerprint["device"] == "apple"
-             else fingerprint["checkpoint_path"]))
-        if Path(card.checkpoint) != Path(expected_checkpoint):
+        # Torch weights are resolved from the registry and have no local bundle;
+        # only Apple keeps a converted bundle directory beside the record.
+        expected_checkpoint = str(path.parent / "bundle") if fingerprint["device"] == "apple" else ""
+        if card.checkpoint != expected_checkpoint:
             return None
         for name, digest in card.artifacts.items():
             relative = Path(name)
@@ -294,7 +283,9 @@ def _cached(path, fingerprint):
             artifact = path.parent / relative
             if not artifact.is_file() or file_sha256(artifact) != digest:
                 return None
-        if not card.artifacts or not Path(card.checkpoint).exists():
+        if not card.artifacts:
+            return None
+        if fingerprint["device"] == "apple" and not Path(card.checkpoint).exists():
             return None
         if "reference.npz" not in card.artifacts or "reference.npz.json" not in card.artifacts:
             return None
@@ -326,18 +317,15 @@ def prepare_model(options, state_dir, *, model_id=None, expected_sha256=None, re
     options["device"] = normalize_device(options["device"])
     spec = resolve_model(options["model"])
     options["model"] = spec.name
+    # Apple converts its bundle from the registry artifact, so no bundle is required yet.
     validate_backend(spec.name, options["device"], options.get("checkpoint"),
-                     options.get("mlx_python"), options["precision"])
-    source = Path(options.get("checkpoint") or Path(options["decoder_dir"]) / spec.checkpoint).absolute()
-    options["checkpoint"] = str(source)
-    if not source.exists():
-        raise ValueError(f"Checkpoint is missing: {source}. Download it first; preparation never downloads weights.")
+                     options.get("mlx_python"), options["precision"], require_checkpoint=False)
     state = Path(state_dir).absolute()
     fingerprint = _identity(options)
-    if expected_sha256 is not None and fingerprint["checkpoint_sha256"] != expected_sha256:
-        raise ValueError("Checkpoint SHA-256 does not match --expected-sha256")
-    # The caller's supplied label is part of the record, never an inferred release claim.
-    label = model_id or "checkpoint-sha256-" + fingerprint["checkpoint_sha256"][:16]
+    if expected_sha256 is not None and fingerprint["artifact_sha256"] != expected_sha256:
+        raise ValueError("Registry artifact SHA-256 does not match --expected-sha256")
+    # The caller's supplied label is part of the record, defaulting to the exact model ID.
+    label = model_id or spec.model_id
     key = hashlib.sha256(json.dumps(fingerprint, sort_keys=True).encode()).hexdigest()
     destination = state / key
     card_path = destination / "prepared.json"
@@ -348,7 +336,8 @@ def prepare_model(options, state_dir, *, model_id=None, expected_sha256=None, re
                                  allow_memory_risk=allow_memory_risk, sequence_length=sequence_length)
         if not plan_only:
             _enforce_resources(plans)
-        return dict(options, checkpoint=card.checkpoint), {"cache_hit": True, "record": str(card_path),
+        effective_checkpoint = card.checkpoint or options.get("checkpoint")
+        return dict(options, checkpoint=effective_checkpoint), {"cache_hit": True, "record": str(card_path),
             "plan_only": plan_only, "resources": plans,
             "time_estimate": _time_estimate(card.timing, estimate_forwards, sequence_length, options.get("batch_size") or 1)}
     if cached is not None:
@@ -365,22 +354,20 @@ def prepare_model(options, state_dir, *, model_id=None, expected_sha256=None, re
         print(f"Preparing {spec.name} for {options['device']} (one-time checks for this model/runtime)…", file=sys.stderr, flush=True)
         with tempfile.TemporaryDirectory(dir=state, prefix="preparing-") as temporary:
             staging = Path(temporary)
-            raw = (source if source.is_file() else
-                   _reference_checkpoint(options, state, fingerprint["checkpoint_sha256"], reference_checkpoint))
-            inventory = _inspect(options, raw, staging / "inventory.json")
+            inventory = _inspect(options, staging / "inventory.json")
             plans = _resource_report(options, inventory.parameter_bytes, needs_preparation=True,
                                      checkpoint_storage_bytes=inventory.checkpoint_storage_bytes,
                                      allow_memory_risk=allow_memory_risk, sequence_length=sequence_length)
             if plan_only:
                 if _identity(options) != fingerprint:
-                    raise ValueError("Checkpoint, code or environment changed during inspection")
+                    raise ValueError("Registry artifact, code or environment changed during inspection")
                 return options, {"cache_hit": False, "plan_only": True, "prepared": False,
-                    "checkpoint_sha256": fingerprint["checkpoint_sha256"],
+                    "artifact_sha256": fingerprint["artifact_sha256"],
                     "inventory": inventory.model_dump(), "resources": plans,
                     "time_estimate": _time_estimate(None, estimate_forwards, sequence_length, options.get("batch_size") or 1)}
             _enforce_resources(plans)
             reference = staging / "reference.npz"
-            _fixture(options, raw, reference, backend="torch")
+            _fixture(options, reference, backend="torch")
             with np.load(reference, allow_pickle=False) as data:
                 data_shape = data["tokens"].shape
                 if (data["logits"].ndim != 3 or data["tokens"].shape != data["logits"].shape[:2]
@@ -401,35 +388,36 @@ def prepare_model(options, state_dir, *, model_id=None, expected_sha256=None, re
                       "tensor_count": info.tensor_count, "parameter_bytes": info.parameter_bytes,
                       "checkpoint_storage_bytes": info.checkpoint_storage_bytes, "synthetic_token_rows": 2}
             timing = TimingProof.model_validate({name: getattr(info, name) for name in TimingProof.model_fields})
-            prepared = source
+            final_checkpoint = ""
             if options["device"] == "apple":
-                if source.is_file():
-                    size = {"DecoderTCR-ESMC_300M": "300m", "DecoderTCR-ESMC_600M": "600m",
-                            "DecoderTCR-ESMC_6B": "6b"}[spec.name]
-                    prepared = staging / "bundle"
-                    code = ("from esmc_mlx.weights import convert_checkpoint; import sys; "
-                            "convert_checkpoint(sys.argv[1],sys.argv[2],'decodertcr-lightning-v03',"
-                            "expected_sha256=sys.argv[3],model_id=sys.argv[4],model_size=sys.argv[5])")
-                    _execute([options["mlx_python"], "-c", code, str(source), str(prepared),
-                              fingerprint["checkpoint_sha256"], label, size], Path(options["decoder_dir"]), options.get("timeout"))
+                size = {"DecoderTCR-ESMC_300M": "300m", "DecoderTCR-ESMC_600M": "600m",
+                        "DecoderTCR-ESMC_6B": "6b"}[spec.name]
+                artifact = _registry_artifact_path(options, spec.model_id)
+                prepared = staging / "bundle"
+                code = ("from esmc_mlx.weights import convert_checkpoint; import sys; "
+                        "convert_checkpoint(sys.argv[1],sys.argv[2],'decodertcr-safetensors-v1',"
+                        "model_id=sys.argv[3],model_size=sys.argv[4])")
+                _execute([options["mlx_python"], "-c", code, str(artifact), str(prepared),
+                          label, size], Path(options["decoder_dir"]), options.get("timeout"))
                 observed = staging / "apple.npz"
-                _fixture(options, prepared, observed, backend="mlx", reference=reference)
+                _fixture(options, observed, backend="mlx", checkpoint=prepared, reference=reference)
                 checks.update(_compare(reference, observed, options["precision"]))
                 info = AppleProof.model_validate_json(observed.with_suffix(".npz.json").read_text())
-                if (info.source_sha256 != fingerprint["checkpoint_sha256"]
+                if (info.source_sha256 != fingerprint["artifact_sha256"]
                         or info.model != spec.name or info.precision != options["precision"]
                         or (info.batch_size, info.sequence_length) != data_shape):
-                    raise ValueError("Apple worker returned a different checkpoint/model/precision")
+                    raise ValueError("Apple worker returned a different artifact/model/precision")
                 timing = TimingProof.model_validate({name: getattr(info, name) for name in TimingProof.model_fields})
+                final_checkpoint = str(destination / "bundle")
             if _identity(options) != fingerprint:
-                raise ValueError("Checkpoint, code or environment changed during preparation")
+                raise ValueError("Registry artifact, code or environment changed during preparation")
             artifacts = {str(p.relative_to(staging)): file_sha256(p) for p in staging.rglob("*") if p.is_file()}
-            final_checkpoint = destination / "bundle" if prepared == staging / "bundle" else prepared
-            card = PreparedModel(fingerprint=fingerprint, checkpoint=str(final_checkpoint), model_id=label,
+            card = PreparedModel(fingerprint=fingerprint, checkpoint=final_checkpoint, model_id=label,
                                  checks=checks, artifacts=artifacts, timing=timing)
             _json_write(staging / "prepared.json", card.model_dump())
             staging.rename(destination)
         print(f"Model ready. Compatibility record: {card_path}", file=sys.stderr, flush=True)
-        return dict(options, checkpoint=str(final_checkpoint)), {"cache_hit": False, "record": str(card_path),
+        effective_checkpoint = final_checkpoint or options.get("checkpoint")
+        return dict(options, checkpoint=effective_checkpoint), {"cache_hit": False, "record": str(card_path),
             "checks": checks, "resources": plans,
             "time_estimate": _time_estimate(timing, estimate_forwards, sequence_length, options.get("batch_size") or 1)}

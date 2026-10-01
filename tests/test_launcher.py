@@ -1,14 +1,11 @@
 """Portable launcher/setup checks; no installation, network or pretrained models."""
-import hashlib
 import importlib.util
-import io
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import sys
-import tarfile
 
 import pytest
 
@@ -100,15 +97,20 @@ def test_default_config_and_symlink_interpreter_preserve_relative_paths(launcher
 
 
 def settings_fixture(root):
+    # Torch CPU/CUDA weights are registry-resolved (checkpoint=None); an Apple bundle
+    # directory still exercises checkpoint-path resolution and interpreter symlinks.
     directory=root/"settings"
     directory.mkdir()
     (directory/"decoder").mkdir()
-    (directory/"weights.ckpt").write_bytes(b"synthetic")
+    (directory/"bundle").mkdir()
     interpreter=directory/"runtime/bin/python"
     interpreter.parent.mkdir(parents=True)
     interpreter.symlink_to(sys.executable)
-    values=dict(decoder_dir="decoder",python_executable="runtime/bin/python",checkpoint="weights.ckpt",
-                device="cpu",model="esmc-300m",precision="float32")
+    mlx=directory/"mlx/bin/python"
+    mlx.parent.mkdir(parents=True)
+    mlx.symlink_to(sys.executable)
+    values=dict(decoder_dir="decoder",python_executable="runtime/bin/python",checkpoint="bundle",
+                mlx_python="mlx/bin/python",device="apple",model="esmc-300m",precision="float32")
     path=directory/"config.json"
     path.write_text(json.dumps(values))
     return path,values,interpreter
@@ -126,13 +128,13 @@ def test_config_paths_resolve_relative_to_config_without_resolving_python_symlin
     values=bootstrap.read_settings(path,Path(sys.executable),validation_environment(bootstrap,root))
     assert values["python_executable"] == str(interpreter)
     assert values["python_executable"] != str(interpreter.resolve())
-    assert values["checkpoint"] == str(path.parent/"weights.ckpt")
+    assert values["checkpoint"] == str(path.parent/"bundle")
     assert values["model"] == "DecoderTCR-ESMC_300M"
 
 
 @pytest.mark.parametrize("changes", [
-    {"precision":"float16"}, {"device":"invented"}, {"model":"invented"},
-    {"device":"apple","mlx_python":None}, {"unknown":True}, {"batch_size":True},
+    {"device":"cpu","precision":"float16"}, {"device":"invented"}, {"model":"invented"},
+    {"mlx_python":None}, {"checkpoint":None}, {"unknown":True}, {"batch_size":True},
 ])
 def test_reused_settings_validate_schema_and_backend_combinations(launcher,changes):
     _,bootstrap,root=launcher
@@ -158,9 +160,6 @@ def test_doctor_never_installs_or_rewrites_configuration(launcher,monkeypatch,ca
     core.touch()
     cfg=root/("chosen.json" if explicit else ".tcr/runtime.json")
     cfg.write_text("unchanged config")
-    source=root/"decoder/src/DecoderTCR/utils/predict_from_genes.py"
-    source.parent.mkdir(parents=True)
-    source.touch()
     seen=[]
     monkeypatch.setattr(bootstrap,"run",lambda *a,**k:None)
     def read_settings(path,*args):
@@ -170,7 +169,7 @@ def test_doctor_never_installs_or_rewrites_configuration(launcher,monkeypatch,ca
     monkeypatch.setattr(bootstrap,"read_settings",read_settings)
     monkeypatch.setattr(bootstrap,"probe",lambda *a,**k:seen.append(k["deep"]))
     monkeypatch.setattr(bootstrap,"ensure_uv",lambda *a:pytest.fail("doctor installed dependencies"))
-    monkeypatch.setattr(bootstrap,"download",lambda *a:pytest.fail("doctor downloaded data"))
+    monkeypatch.setattr(bootstrap,"install_decoder",lambda *a:pytest.fail("doctor installed the model env"))
     flags=["doctor","--config",str(cfg)] if explicit else ["doctor"]
     assert bootstrap.main(flags,root=root) == 0
     assert seen == [False] and cfg.read_text() == "unchanged config"
@@ -216,119 +215,73 @@ def test_failed_reuse_probe_preserves_all_existing_configurations(launcher,monke
     assert not (state/"setup.lock").exists()
 
 
-def test_core_only_setup_never_touches_model_downloads(launcher,monkeypatch):
+def test_core_only_setup_never_installs_the_model_environment(launcher,monkeypatch):
     _,bootstrap,root=launcher
     calls=[]
     monkeypatch.setattr(bootstrap,"ensure_uv",lambda *a:["uv"])
     monkeypatch.setattr(bootstrap,"run",lambda cmd,**k:calls.append([str(x) for x in cmd]))
-    monkeypatch.setattr(bootstrap,"download",lambda *a:pytest.fail("model download during core-only setup"))
+    monkeypatch.setattr(bootstrap,"install_decoder",lambda *a:pytest.fail("model env install during core-only setup"))
+    monkeypatch.setattr(bootstrap,"configure_registry",lambda *a:pytest.fail("registry configured during core-only setup"))
     monkeypatch.setattr(bootstrap,"probe",lambda *a,**k:pytest.fail("model probe during core-only setup"))
     assert bootstrap.main(["setup","--core-only"],root=root) == 0
     assert any("pip" in command for command in calls)
+    # Core-only installs only the core env with pinned deps; no registry configure call.
+    assert not any("configure" in command for command in calls)
+    assert not any("decodertcr_internal" in " ".join(command) for command in calls if "install" not in command)
     assert not (root/".tcr/runtime.json").exists()
 
 
-@pytest.mark.parametrize("selected",[None,"esmc-600m","esmc-6b"])
-def test_setup_model_selection_uses_immutable_checkpoint_identity(launcher,monkeypatch,selected):
+@pytest.mark.parametrize("selected,canonical",[(None,"DecoderTCR-ESMC_300M"),
+    ("esmc-600m","DecoderTCR-ESMC_600M"),("esmc-6b","DecoderTCR-ESMC_6B")])
+def test_cpu_setup_installs_model_env_and_configures_registry_without_download(launcher,monkeypatch,selected,canonical):
+    # Full CPU setup installs decodertcr_internal into an isolated model env, connects
+    # it to the shared registry, and saves registry-resolved settings (checkpoint=None).
     _,bootstrap,root=launcher
-    decoder=root/".tcr/DecoderTCR"
-    decoder.mkdir(parents=True)
-    (decoder/".workbench-revision").write_text(bootstrap.DECODER_REV)
-    downloads=[]
-    monkeypatch.setattr(bootstrap,"ensure_uv",lambda *a:["uv"])
-    monkeypatch.setattr(bootstrap,"run",lambda *a,**k:None)
-    monkeypatch.setattr(bootstrap,"install_decoder",lambda *a:None)
-    monkeypatch.setattr(bootstrap,"probe",lambda *a,**k:None)
-    monkeypatch.setattr(bootstrap,"download",lambda *args:downloads.append(args))
-    args=["setup","--device","cpu"]
+    registry=root/"shared registry"
+    registry.mkdir()
+    calls=[]
+    monkeypatch.setattr(bootstrap,"ensure_uv",lambda *a:["uv","--no-config"])
+    monkeypatch.setattr(bootstrap,"run",lambda cmd,**k:calls.append([str(x) for x in cmd]))
+    installs=[]
+    def install_decoder(uv,env_dir,env,source,device="cpu"):
+        installs.append((Path(env_dir),source,device))
+        python=bootstrap.python_in(env_dir)
+        python.parent.mkdir(parents=True,exist_ok=True)
+        python.touch()
+        return python
+    monkeypatch.setattr(bootstrap,"install_decoder",install_decoder)
+    configured=[]
+    monkeypatch.setattr(bootstrap,"configure_registry",lambda python,reg,env:configured.append((Path(python),reg)))
+    monkeypatch.setattr(bootstrap,"ensure_germlines",lambda *a,**k:None)
+    monkeypatch.setattr(bootstrap,"check_setup_resources",lambda *a,**k:None)
+    probes=[]
+    monkeypatch.setattr(bootstrap,"probe",lambda settings,env,**k:probes.append((settings,k.get("deep"))))
+    args=["setup","--device","cpu","--registry",str(registry)]
     if selected:
         args += ["--model",selected]
     assert bootstrap.main(args,root=root) == 0
-    model,filename,digest,size=bootstrap.SETUP_MODELS[selected or "esmc-300m"]
-    checkpoint=decoder/"checkpoints"/filename
-    assert downloads == [(f"https://huggingface.co/biohub/DecoderTCR/resolve/{bootstrap.MODEL_REV}/{filename}",
-                          checkpoint,digest,size)]
+    model_env=root/".tcr/envs/model"
+    # The model env was installed from the pinned package source at cpu backend.
+    assert installs == [(model_env,bootstrap.DECODER_PACKAGE,"cpu")]
+    # The registry was configured against the freshly installed model interpreter.
+    assert configured == [(bootstrap.python_in(model_env),str(registry))]
+    # No download function exists; nothing is fetched over the network.
+    assert not hasattr(bootstrap,"download")
     saved=json.loads((root/".tcr/runtime.json").read_text())
-    assert saved["model"] == model and saved["checkpoint"] == str(checkpoint)
+    assert saved["model"] == canonical and saved["checkpoint"] is None
     assert saved["device"] == "cpu" and saved["precision"] == "float32"
+    assert saved["decoder_dir"] == str(model_env)
+    cpu=json.loads((root/".tcr/runtime-cpu.json").read_text())
+    assert cpu == saved and cpu["checkpoint"] is None
+    assert probes and probes[-1][1] is True
 
 
-def test_checksum_download_is_atomic_and_reuses_verified_artifact(launcher,monkeypatch):
+def test_full_setup_requires_a_registry(launcher,monkeypatch,capsys):
     _,bootstrap,root=launcher
-    body=b"synthetic checkpoint bytes"
-    expected=hashlib.sha256(body).hexdigest()
-    calls=[]
-    def open_url(*args,**kwargs):
-        calls.append(args)
-        return io.BytesIO(body)
-    monkeypatch.setattr(bootstrap.urllib.request,"urlopen",open_url)
-    dest=root/"downloads/weights.ckpt"
-    bootstrap.download("https://example.invalid/model",dest,expected,len(body))
-    assert dest.read_bytes() == body and not dest.with_suffix(".ckpt.part").exists()
-    bootstrap.download("https://example.invalid/model",dest,expected,len(body))
-    assert len(calls) == 1
-    with pytest.raises(ValueError,match="Checksum"):
-        bootstrap.download("https://example.invalid/model",dest,"0"*64,len(body))
-    assert dest.read_bytes() == body and len(calls) == 1
-
-
-@pytest.mark.parametrize("error",["checksum","short","long","transfer"])
-def test_failed_download_cleans_partial_file_without_publishing(launcher,monkeypatch,error):
-    _,bootstrap,root=launcher
-    body=b"synthetic"
-    class Interrupted(io.BytesIO):
-        def read(self,size=-1):
-            if self.tell():
-                raise OSError("transfer failed")
-            return super().read(size)
-    source=Interrupted(body) if error == "transfer" else io.BytesIO(body)
-    monkeypatch.setattr(bootstrap.urllib.request,"urlopen",lambda *a,**k:source)
-    expected="0"*64 if error == "checksum" else hashlib.sha256(body).hexdigest()
-    size=len(body)+1 if error == "short" else len(body)-1 if error == "long" else len(body)
-    dest=root/"downloads/weights.ckpt"
-    with pytest.raises((ValueError,OSError)):
-        bootstrap.download("https://example.invalid/model",dest,expected,size)
-    assert not dest.exists() and not dest.with_suffix(".ckpt.part").exists()
-
-
-def archive_fixture(path,entries):
-    with tarfile.open(path,"w:gz") as out:
-        for name,kind in entries:
-            member=tarfile.TarInfo(name)
-            if kind == "file":
-                member.size=4
-                out.addfile(member,io.BytesIO(b"test"))
-            else:
-                member.type={"symlink":tarfile.SYMTYPE,"hardlink":tarfile.LNKTYPE,"fifo":tarfile.FIFOTYPE}[kind]
-                member.linkname="../outside"
-                out.addfile(member)
-
-
-@pytest.mark.parametrize("suffix,kind",[("../outside","file"),("sub/../../outside","file"),
-    ("sub\\outside","file"),("linked","symlink"),("linked","hardlink"),("pipe","fifo"),
-    ("ABSOLUTE","file"),("WRONG_ROOT","file")])
-def test_source_archive_rejects_unsafe_paths_and_links(launcher,suffix,kind):
-    _,bootstrap,root=launcher
-    prefix="DecoderTCR-"+bootstrap.DECODER_REV
-    name="/outside" if suffix == "ABSOLUTE" else "wrong/file" if suffix == "WRONG_ROOT" else prefix+"/"+suffix
-    archive=root/"archive.tar.gz"
-    archive_fixture(archive,[(name,kind)])
-    with pytest.raises(ValueError,match="Unsafe"):
-        bootstrap.unpack_source(archive,root/"managed")
-    assert not (root/"managed").exists() and not (root/"outside").exists()
-    assert not list(root.glob("source-*"))
-
-
-def test_source_archive_extracts_pinned_tree_without_touching_outside_files(launcher):
-    _,bootstrap,root=launcher
-    prefix="DecoderTCR-"+bootstrap.DECODER_REV
-    archive=root/"archive.tar.gz"
-    archive_fixture(archive,[(prefix+"/src/DecoderTCR/utils/predict_from_genes.py","file")])
-    target=root/"managed"
-    bootstrap.unpack_source(archive,target)
-    assert (target/".workbench-revision").read_text().strip() == bootstrap.DECODER_REV
-    assert (target/"src/DecoderTCR/utils/predict_from_genes.py").read_text() == "test"
-    assert not list(root.glob("source-*"))
+    monkeypatch.delenv("DECODERTCR_REGISTRY",raising=False)
+    monkeypatch.setattr(bootstrap,"ensure_uv",lambda *a:pytest.fail("installation before registry validation"))
+    assert bootstrap.main(["setup","--device","cpu"],root=root) == 1
+    assert "registry" in capsys.readouterr().err.lower() and not (root/".tcr").exists()
 
 
 def test_atomic_config_write_keeps_old_config_when_replace_fails(launcher,monkeypatch):
@@ -343,16 +296,15 @@ def test_atomic_config_write_keeps_old_config_when_replace_fails(launcher,monkey
     assert path.read_text() == "old" and not path.with_suffix(".json.tmp").exists()
 
 
-def test_cpu_reuse_resolves_registry_checkpoint_when_not_explicit(launcher):
+def test_cpu_reuse_keeps_registry_resolved_torch_settings_without_local_checkpoint(launcher):
+    # Torch weights are registry-resolved by model ID; a CPU config has no local .ckpt.
     _,bootstrap,root=launcher
     path,values,_=settings_fixture(root)
-    values["checkpoint"]=None
-    default=path.parent/"decoder/checkpoints/DecoderTCR-ESMC-V0.3/300M.ckpt"
-    default.parent.mkdir(parents=True)
-    default.write_bytes(b"synthetic default checkpoint")
+    values.update(device="cpu",checkpoint=None,mlx_python=None)
     path.write_text(json.dumps(values))
     checked=bootstrap.read_settings(path,Path(sys.executable),validation_environment(bootstrap,root))
-    assert checked["checkpoint"] == str(default)
+    assert checked["checkpoint"] is None
+    assert checked["device"] == "cpu" and checked["model"] == "DecoderTCR-ESMC_300M"
 
 
 @pytest.mark.parametrize("device,filename",[("cpu","cpu"),("apple","apple"),("cuda:2","gpu")])
@@ -381,12 +333,12 @@ def test_deep_doctor_checks_cuda_availability_and_selected_index(launcher,monkey
     fake.device=lambda name:SimpleNamespace(index=int(name.partition(":")[2]) if ":" in name else None)
     fake.cuda=SimpleNamespace(is_available=lambda:available,device_count=lambda:count)
     monkeypatch.setitem(sys.modules,"torch",fake)
-    monkeypatch.setitem(sys.modules,"DecoderTCR",ModuleType("DecoderTCR"))
-    monkeypatch.setattr(bootstrap,"sha256",lambda path:bootstrap.MODEL_SHA)
+    # Only the CUDA availability/index probe is exercised here; the germline, registry
+    # reachability and registry-release probes are treated as already satisfied.
     def run(command,**kwargs):
-        if command[2] != bootstrap.GERMLINE_PROBE:
+        if "torch.cuda.is_available" in command[2]:
             monkeypatch.setattr(sys,"argv",["-c",*command[3:]])
-            exec(command[2],{})  # Execute the real small probe against a fake Torch runtime.
+            exec(command[2],{})  # Execute the real CUDA probe against a fake Torch runtime.
     monkeypatch.setattr(bootstrap,"run",run)
     settings=dict(device=device,python_executable="unused",model="DecoderTCR-ESMC_300M",checkpoint="unused")
     if passes:
@@ -397,45 +349,48 @@ def test_deep_doctor_checks_cuda_availability_and_selected_index(launcher,monkey
 
 
 @pytest.mark.parametrize("system,device",[("Linux","cpu"),("Linux","gpu"),("Darwin","cpu")])
-def test_decoder_install_uses_cpu_torch_on_linux_and_frozen_pins(launcher,monkeypatch,system,device):
+def test_decoder_install_uses_cpu_torch_on_linux_and_pinned_source(launcher,monkeypatch,system,device):
+    # install_decoder creates an isolated Python 3.12 env and pip-installs the decoder
+    # source; a Linux CPU install pins the CPU Torch wheel to avoid multi-GB NVIDIA wheels.
     module,bootstrap,root=launcher
-    decoder,state=root/"decoder",root/".tcr"
+    env_dir=root/"envs/model"
+    source="decodertcr-internal==0.5.0"
     calls=[]
     monkeypatch.setattr(bootstrap.platform,"system",lambda:system)
     monkeypatch.setattr(bootstrap,"run",lambda command,**kwargs:calls.append([str(x) for x in command]))
-    bootstrap.install_decoder(["uv","--no-config"],decoder,state,{},device=device)
+    returned=bootstrap.install_decoder(["uv","--no-config"],env_dir,{},source,device=device)
+    assert returned == module.python_in(env_dir)
+    # Missing interpreter forces a fresh venv creation before installation.
+    created=next(command for command in calls if "venv" in command)
+    assert created[created.index("--python")+1] == "3.12" and str(env_dir) in created
+    installed=next(command for command in calls if "install" in command)
+    assert installed[installed.index("--python")+1] == str(module.python_in(env_dir))
+    assert source in installed
     if system == "Linux" and device == "cpu":
-        exported=next(command for command in calls if "export" in command)
-        installed=next(command for command in calls if "install" in command)
-        assert "--frozen" in exported and "--no-dev" in exported
-        assert exported[exported.index("--prune")+1] == "torch"
-        requirements=exported[exported.index("--output-file")+1]
-        assert installed[installed.index("-r")+1] == requirements
         assert installed[installed.index("--torch-backend")+1] == "cpu"
         assert "torch==2.10.0" in installed
-        assert installed[installed.index("--python")+1] == str(module.python_in(decoder/".venv"))
-        assert not any("sync" in command for command in calls)
-        assert not any("nvidia" in value.lower() or "cuda" in value.lower() for command in calls for value in command)
     else:
-        assert len(calls) == 1 and "sync" in calls[0] and "--frozen" in calls[0]
-        assert "--prune" not in calls[0] and "--torch-backend" not in calls[0]
+        assert "--torch-backend" not in installed
+        assert not any("nvidia" in value.lower() for command in calls for value in command)
 
 
 @pytest.mark.parametrize("passes",[True,False])
 def test_linux_gpu_setup_publishes_only_after_successful_cuda_probe(launcher,monkeypatch,passes):
     _,bootstrap,root=launcher
+    registry=root/"registry"
+    registry.mkdir()
     state=config_files(root)
     original={path:path.read_bytes() for path in state.glob("*.json")}
-    decoder=state/"DecoderTCR"
-    decoder.mkdir()
-    (decoder/".workbench-revision").write_text(bootstrap.DECODER_REV)
     devices=[]
     probes=[]
     monkeypatch.setattr(bootstrap.platform,"system",lambda:"Linux")
     monkeypatch.setattr(bootstrap,"ensure_uv",lambda *a:["uv"])
     monkeypatch.setattr(bootstrap,"run",lambda *a,**k:None)
-    monkeypatch.setattr(bootstrap,"install_decoder",lambda *args:devices.append(args[-1]))
-    monkeypatch.setattr(bootstrap,"download",lambda *a:None)
+    monkeypatch.setattr(bootstrap,"install_decoder",
+                        lambda uv,env_dir,env,source,device:devices.append(device) or bootstrap.python_in(env_dir))
+    monkeypatch.setattr(bootstrap,"configure_registry",lambda *a,**k:None)
+    monkeypatch.setattr(bootstrap,"ensure_germlines",lambda *a,**k:None)
+    monkeypatch.setattr(bootstrap,"check_setup_resources",lambda *a,**k:None)
     def probe(settings,env,*,deep):
         assert {path:path.read_bytes() for path in state.glob("*.json")} == original
         assert deep and settings["device"] == "cuda" and settings["precision"] == "float32"
@@ -443,7 +398,7 @@ def test_linux_gpu_setup_publishes_only_after_successful_cuda_probe(launcher,mon
         if not passes:
             raise subprocess.CalledProcessError(1,["cuda-probe"],stderr="CUDA device unavailable")
     monkeypatch.setattr(bootstrap,"probe",probe)
-    assert bootstrap.main(["setup","--device","gpu"],root=root) == (0 if passes else 1)
+    assert bootstrap.main(["setup","--device","gpu","--registry",str(registry)],root=root) == (0 if passes else 1)
     assert devices == ["gpu"] and len(probes) == 1
     assert not (state/"setup.lock").exists()
     if passes:
@@ -500,38 +455,33 @@ def test_deep_apple_probe_checks_decoder_bundle_identity(launcher,monkeypatch,mo
     if passes:
         bootstrap.probe(settings,{},deep=True)
     else:
-        with pytest.raises((AssertionError,ValueError),match="Metal|architecture/tokenizer"):
+        with pytest.raises((AssertionError,ValueError),match="Metal|not a DecoderTCR variant|architecture/tokenizer"):
             bootstrap.probe(settings,{},deep=True)
 
 
-@pytest.mark.parametrize("width,passes",[(960,True),(1152,False)])
-def test_custom_checkpoint_probe_checks_inventory_and_labels_unvalidated(launcher,monkeypatch,capsys,width,passes):
-    from types import ModuleType, SimpleNamespace
+def test_deep_cpu_probe_resolves_the_registry_release_identity(launcher,monkeypatch):
+    # The CPU/CUDA deep probe confirms the exact registry release resolves via the
+    # decodertcr_internal registry by model ID; no local checkpoint file is inspected.
+    from types import ModuleType
 
     _,bootstrap,_=launcher
     torch=ModuleType("torch")
     torch.__version__="synthetic"
-    state={"model.model.embed.weight":SimpleNamespace(shape=(64,width))}
-    state.update({f"model.model.transformer.blocks.{i}.weight":None for i in range(30)})
-    def load(path,**kwargs):
-        assert kwargs == {"map_location":"cpu","weights_only":True,"mmap":True}
-        return {"state_dict":state}
-    torch.load=load
     monkeypatch.setitem(sys.modules,"torch",torch)
-    monkeypatch.setitem(sys.modules,"DecoderTCR",ModuleType("DecoderTCR"))
-    monkeypatch.setattr(bootstrap,"sha256",lambda path:"a"*64)
-    monkeypatch.setattr(sys,"path",list(sys.path))
+    resolved=[]
+    dt=ModuleType("decodertcr_internal")
+    dt.__version__="synthetic"
+    dt.models=lambda:["release"]
+    dt.info=lambda model_id:(resolved.append(model_id) or {
+        "model_id":model_id,
+        "member":{"sequence_convention":"esmc","weights":{"sha256":"f"*64}}})
+    dt.normalize_gene=lambda gene:gene
+    monkeypatch.setitem(sys.modules,"decodertcr_internal",dt)
     def run(command,**kwargs):
-        if command[2] != bootstrap.GERMLINE_PROBE:
+        if "info=dt.info" in command[2]:
             monkeypatch.setattr(sys,"argv",["-c",*command[3:]])
             exec(command[2],{})
     monkeypatch.setattr(bootstrap,"run",run)
-    settings=dict(device="cpu",python_executable="unused",checkpoint="custom",model="DecoderTCR-ESMC_300M")
-    if passes:
-        bootstrap.probe(settings,{},deep=True)
-        output=capsys.readouterr().out
-        assert "User-supplied checkpoint" in output and "has not been numerically validated" in output
-        assert "a"*64 in output
-    else:
-        with pytest.raises(ValueError,match="architecture does not match"):
-            bootstrap.probe(settings,{},deep=True)
+    settings=dict(device="cpu",python_executable="unused",model="DecoderTCR-ESMC_300M",checkpoint=None)
+    bootstrap.probe(settings,{},deep=True)
+    assert resolved == [bootstrap.MODEL_IDS["DecoderTCR-ESMC_300M"]]

@@ -13,20 +13,17 @@ This skill is optional; ordinary command-line use does not require an agent.
 
 ## Establish the available runtime
 
+- **If the environment is not installed yet, or setup/download fails, use the
+  `tcr-workbench-setup` skill** — it owns device/model selection, the download-authorization
+  gate, and the install/proxy/TLS failure fixes. Return here once `doctor` reports a healthy
+  install. The brief checks below are enough to decide whether that hand-off is needed.
 - Read `python3 tcr.py --help`, then the selected command's `--help` for exact
   options. Top-level help works before installation. Do not substitute old executable paths
   or infer flags from examples in another checkout.
 - Run `python3 tcr.py doctor` to inspect the local setup. `doctor --deep` checks
   hashes and imports when deeper diagnosis is needed; it does not install assets.
-- When installation is requested, `python3 tcr.py setup --device cpu` or
-  `setup --device apple` installs the managed model runtime and downloads roughly
-  4 GB for default 300M, or about 2.3 GB with `--model esmc-600m`.
-  `setup --core-only` installs the core without model weights; inspect
-  `setup --help` for reuse of existing runtimes/assets. Core-only installation can
-  still download Python dependencies. Setup is not an ordinary analysis step:
-  do not initiate downloads unless installation/downloads are already authorized.
-  Linux `setup --device gpu` requires a working NVIDIA driver and additional
-  disk space; its installation route has no real GPU validation here.
+  If it reports the environment is not installed or unhealthy, hand off to the
+  `tcr-workbench-setup` skill rather than running `setup` from here.
 - The launcher uses its managed `.tcr/` configuration unless the user supplies
   `--config`. Honor that choice. Diagnose missing models, references or incompatible
   environments before starting an expensive run; do not silently switch devices.

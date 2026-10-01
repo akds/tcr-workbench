@@ -1,9 +1,7 @@
 """Preparation cache contracts with synthetic arrays and no model/framework calls."""
 
 import hashlib
-import importlib.util
 import json
-import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,64 +13,11 @@ from tcr_workbench.resources import GIB, HardwareMetrics
 
 
 @pytest.fixture
-def storage_counter():
-    worker = Path(preparation.__file__).parent / "backends/preparation_worker.py"
-    spec = importlib.util.spec_from_file_location("synthetic_preparation_worker", worker)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.checkpoint_storage_bytes
-
-
-def test_checkpoint_storage_counts_optimizer_and_shared_views_once_without_reading_values(
-    storage_counter,
-):
-    class Storage:
-        def __init__(self, pointer, size):
-            self.pointer, self.size = pointer, size
-
-        def data_ptr(self):
-            return self.pointer
-
-        def nbytes(self):
-            return self.size
-
-    class Tensor:
-        def __init__(self, pointer, size):
-            self.storage = Storage(pointer, size)
-
-        def untyped_storage(self):
-            return self.storage
-
-        def __getattr__(self, name):
-            pytest.fail(f"Storage inspection must not read tensor values via {name}")
-
-    weights, view = Tensor(1000, 4096), Tensor(1000, 4096)
-    optimizer = Tensor(2000, 8192)
-    checkpoint = {
-        "state_dict": {"weights": weights, "view": view},
-        "optimizer_states": [{"state": {0: (optimizer, weights)}}],
-        "epoch": 8,
-        "empty": Tensor(0, 0),
-    }
-    checkpoint["cycle"] = checkpoint
-    assert storage_counter(checkpoint, SimpleNamespace(Tensor=Tensor)) == 12288
-
-
-def test_checkpoint_storage_scan_handles_deep_container_nesting_without_recursion(storage_counter):
-    class Tensor:
-        def untyped_storage(self):
-            return SimpleNamespace(data_ptr=lambda: 1000, nbytes=lambda: 4096)
-
-    checkpoint = Tensor()
-    for _ in range(2000):
-        checkpoint = [checkpoint]
-    assert storage_counter(checkpoint, SimpleNamespace(Tensor=Tensor)) == 4096
-
-
-@pytest.fixture
 def harness(tmp_path, monkeypatch):
-    source = tmp_path / "weights.ckpt"
-    source.write_bytes(b"synthetic checkpoint v1")
+    # A registry artifact stands in for the released .safetensors weights. Torch
+    # runs resolve it from the registry (no local bundle); Apple converts it once.
+    source = tmp_path / "weights.safetensors"
+    source.write_bytes(b"synthetic registry artifact v1")
     upstream = tmp_path / "decoder"
     upstream.mkdir()
     options = dict(
@@ -81,7 +26,7 @@ def harness(tmp_path, monkeypatch):
         model="esmc-300m",
         device="cpu",
         precision="float32",
-        checkpoint=str(source),
+        checkpoint=None,
         mlx_python=None,
         timeout=10,
     )
@@ -89,7 +34,12 @@ def harness(tmp_path, monkeypatch):
         workbench_adapter_sha256="core-v1",
         environment_sha256="python-v1",
         germline_sha256="germlines-v1",
-        source_sha256="decoder-v1",
+        # The registry release identity replaces the former local source hash;
+        # Apple parity compares its converted bundle against this exact artifact.
+        artifact_sha256=preparation.file_sha256(source),
+        catalog_sha256="catalog-v1",
+        model_id="decodertcr@1.5.0:300M",
+        model_sequence_convention="v2",
     )
     mlx_identity = dict(
         mlx_environment_sha256="mlx-environment-v1", mlx_source_sha256="mlx-source-v1"
@@ -108,13 +58,16 @@ def harness(tmp_path, monkeypatch):
         inspections=[],
         hardware={"host_total_bytes": 64 * GIB, "host_available_bytes": 48 * GIB},
     )
-    monkeypatch.setattr(preparation, "_decoder_fingerprint", lambda *a: dict(identity))
+    # The migrated _decoder_fingerprint is keyword-aware (model_id=...).
+    monkeypatch.setattr(preparation, "_decoder_fingerprint", lambda *a, **k: dict(h.identity))
     monkeypatch.setattr(
         preparation.mlx_decoder, "runtime_fingerprint", lambda *a: dict(mlx_identity)
     )
+    # Apple resolves the registry artifact path in the model environment.
+    monkeypatch.setattr(preparation, "_registry_artifact_path", lambda options, model_id: source)
 
-    def fixture(options, checkpoint, output, *, backend, reference=None):
-        calls.append((backend, Path(checkpoint)))
+    def fixture(options, output, *, backend, checkpoint=None, reference=None):
+        calls.append((backend, Path(checkpoint) if checkpoint is not None else None))
         tokens = np.array([[0, 5, 2, 1], [0, 6, 7, 2]], dtype=np.int32)
         logits = np.ones((2, 4, 64), dtype=np.float32)
         np.savez(output, tokens=tokens, logits=logits)
@@ -138,7 +91,7 @@ def harness(tmp_path, monkeypatch):
         info.update(load_seconds=1.0, forward_seconds=0.5, batch_size=2, sequence_length=4)
         Path(str(output) + ".json").write_text(json.dumps(info))
 
-    def inspect(options, checkpoint, output):
+    def inspect(options, output):
         spec = preparation.resolve_model(options["model"])
         proof = preparation.InventoryProof(
             model=spec.name,
@@ -151,11 +104,12 @@ def harness(tmp_path, monkeypatch):
             forward_checked=False,
         )
         output.write_text(proof.model_dump_json())
-        h.inspections.append(Path(checkpoint))
+        h.inspections.append(spec.model_id)
         return proof
 
     def convert(command, *args):
         assert command[1] == "-c" and "convert_checkpoint" in command[2]
+        assert "decodertcr-safetensors-v1" in command[2]
         target = Path(command[4])
         target.mkdir()
         (target / "model.safetensors").write_bytes(b"synthetic converted tensors")
@@ -184,7 +138,8 @@ def assert_unpublished(h):
 def test_identical_checkpoint_runtime_reuses_preparation_without_model_call(harness):
     h = harness
     options, first = prepare(h)
-    assert options["checkpoint"] == str(h.source)
+    # CPU resolves weights from the registry artifact; no local checkpoint is carried.
+    assert options["checkpoint"] is None
     assert options["model"] == "DecoderTCR-ESMC_300M"
     assert not first["cache_hit"]
     card = json.loads(Path(first["record"]).read_text())
@@ -198,14 +153,14 @@ def test_identical_checkpoint_runtime_reuses_preparation_without_model_call(harn
 def test_plan_only_inspects_metadata_but_never_runs_fixture_or_publishes(harness):
     h = harness
     effective, result = prepare(h, plan_only=True, estimate_forwards=100)
-    assert effective["checkpoint"] == str(h.source)
+    assert effective["checkpoint"] is None
     assert result["plan_only"] and not result["prepared"] and not result["cache_hit"]
     assert result["inventory"]["parameter_bytes"] == h.parameter_bytes
     assert result["inventory"]["checkpoint_storage_bytes"] == h.checkpoint_storage_bytes
     assert not result["inventory"]["finite_values_checked"]
     assert not result["inventory"]["forward_checked"]
     assert result["time_estimate"]["status"] == "unavailable"
-    assert h.inspections == [h.source] and not h.calls
+    assert h.inspections == [h.identity["model_id"]] and not h.calls
     assert set(result["resources"]) == {"preparation", "inference"}
     assert_unpublished(h)
     assert not list(h.state.iterdir())
@@ -216,7 +171,7 @@ def test_memory_over_budget_stops_before_allocating_model_and_plan_remains_avail
     h.hardware["host_available_bytes"] = GIB
     with pytest.raises(ValueError, match="Memory check stopped inference"):
         prepare(h)
-    assert h.inspections == [h.source] and not h.calls
+    assert h.inspections == [h.identity["model_id"]] and not h.calls
     assert_unpublished(h)
     _, result = prepare(h, plan_only=True)
     assert result["resources"]["inference"]["blocked"] and not h.calls
@@ -234,7 +189,7 @@ def test_cached_preparation_rechecks_current_memory_without_rerunning_model(harn
     assert planning["resources"]["inference"]["blocked"]
     assert planning["time_estimate"]["status"] == "rough_extrapolation"
     assert set(planning["resources"]) == {"inference"}
-    assert h.inspections == [h.source] and len(h.calls) == 1
+    assert h.inspections == [h.identity["model_id"]] and len(h.calls) == 1
     assert Path(first["record"]).read_bytes() == old_card
 
 
@@ -324,8 +279,8 @@ def test_invalid_timing_scaling_arguments_reject_before_inspection(harness, argu
 def test_inspection_forward_inventory_and_timing_must_agree(harness, monkeypatch, field, value):
     h = harness
 
-    def corrupt(options, checkpoint, output, **kwargs):
-        h.fixture(options, checkpoint, output, **kwargs)
+    def corrupt(options, output, **kwargs):
+        h.fixture(options, output, **kwargs)
         metadata = Path(str(output) + ".json")
         proof = json.loads(metadata.read_text())
         proof[field] = value
@@ -341,8 +296,8 @@ def test_apple_report_keeps_selected_backend_timing(harness, monkeypatch):
     h = harness
     apple_options(h)
 
-    def timed(options, checkpoint, output, **kwargs):
-        h.fixture(options, checkpoint, output, **kwargs)
+    def timed(options, output, **kwargs):
+        h.fixture(options, output, **kwargs)
         if kwargs["backend"] == "mlx":
             metadata = Path(str(output) + ".json")
             proof = json.loads(metadata.read_text())
@@ -362,8 +317,8 @@ def test_apple_timing_contract_must_match_returned_arrays(harness, monkeypatch, 
     h = harness
     apple_options(h)
 
-    def corrupt(options, checkpoint, output, **kwargs):
-        h.fixture(options, checkpoint, output, **kwargs)
+    def corrupt(options, output, **kwargs):
+        h.fixture(options, output, **kwargs)
         if kwargs["backend"] == "mlx":
             metadata = Path(str(output) + ".json")
             proof = json.loads(metadata.read_text())
@@ -405,20 +360,22 @@ def test_inventory_inspection_contract_is_metadata_only_and_architecture_bound(
     )
     proof.update(change)
     options = dict(model=spec.name, python_executable="synthetic-python", decoder_dir=str(tmp_path))
-    checkpoint, output = tmp_path / "weights.ckpt", tmp_path / "inventory.json"
+    output = tmp_path / "inventory.json"
 
     def execute(command, cwd, timeout):
         assert command[0] == options["python_executable"]
         assert "--inspect-only" in command and cwd == tmp_path
-        assert command[command.index("--checkpoint") + 1] == str(checkpoint)
+        # Inventory reads the registry artifact header by model ID; no local weights.
+        assert command[command.index("--model-id") + 1] == spec.model_id
+        assert "--checkpoint" not in command
         Path(command[command.index("--output") + 1]).write_text(json.dumps(proof))
 
     monkeypatch.setattr(preparation, "_execute", execute)
     if change:
         with pytest.raises(ValueError):
-            preparation._inspect(options, checkpoint, output)
+            preparation._inspect(options, output)
     else:
-        result = preparation._inspect(options, checkpoint, output)
+        result = preparation._inspect(options, output)
         assert result.parameter_bytes == GIB and not result.forward_checked
 
 
@@ -483,7 +440,9 @@ def test_unambiguous_gpu_metrics_skip_selected_runtime_subprocess(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "key", ["workbench_adapter_sha256", "environment_sha256", "germline_sha256", "source_sha256"]
+    # source_sha256 (a local checkout hash) is replaced by artifact_sha256, the
+    # registry release identity; a different released artifact must invalidate too.
+    "key", ["workbench_adapter_sha256", "environment_sha256", "germline_sha256", "artifact_sha256"]
 )
 def test_source_environment_and_germline_changes_invalidate_cache(harness, key):
     h = harness
@@ -493,17 +452,6 @@ def test_source_environment_and_germline_changes_invalidate_cache(harness, key):
     _, second = prepare(h)
     assert not second["cache_hit"] and first["record"] != second["record"]
     assert len(h.calls) == 2 and Path(first["record"]).read_bytes() == original
-
-
-def test_checkpoint_content_change_invalidates_even_with_same_size_and_mtime(harness):
-    h = harness
-    _, first = prepare(h)
-    stat = h.source.stat()
-    h.source.write_bytes(b"synthetic checkpoint v2")
-    os.utime(h.source, ns=(stat.st_atime_ns, stat.st_mtime_ns))
-    _, second = prepare(h)
-    assert not second["cache_hit"] and first["record"] != second["record"]
-    assert len(h.calls) == 2
 
 
 def test_explicit_checksum_mismatch_fails_before_preparing(harness):
@@ -612,8 +560,8 @@ def test_identity_change_during_worker_cannot_publish(harness, monkeypatch):
 def test_invalid_reference_worker_result_is_not_registered(harness, monkeypatch, corruption):
     h = harness
 
-    def corrupt(options, checkpoint, output, **kwargs):
-        h.fixture(options, checkpoint, output, **kwargs)
+    def corrupt(options, output, **kwargs):
+        h.fixture(options, output, **kwargs)
         with np.load(output) as archive:
             tokens, logits = archive["tokens"], archive["logits"]
         info_path = Path(str(output) + ".json")
@@ -686,8 +634,8 @@ def test_invalid_apple_result_cannot_publish_converted_bundle(harness, monkeypat
     h = harness
     apple_options(h)
 
-    def corrupt(options, checkpoint, output, **kwargs):
-        h.fixture(options, checkpoint, output, **kwargs)
+    def corrupt(options, output, **kwargs):
+        h.fixture(options, output, **kwargs)
         if kwargs["backend"] == "mlx":
             metadata = Path(str(output) + ".json")
             info = json.loads(metadata.read_text())
@@ -736,76 +684,6 @@ def test_lock_exclusion_preserves_owner_lock_and_cleans_up(tmp_path):
                 pytest.fail("second worker acquired lock")
         assert path.read_bytes() == original
     assert not path.exists()
-
-
-def existing_bundle(h):
-    bundle = h.source.parent / "existing-bundle"
-    bundle.mkdir()
-    for name in ("config.json", "tokenizer.json", "model.safetensors"):
-        (bundle / name).write_bytes(b"synthetic bundle component")
-    (bundle / "manifest.json").write_text(
-        json.dumps({"source_sha256": preparation.file_sha256(h.source)})
-    )
-    apple_options(h)
-    h.options["checkpoint"] = str(bundle)
-    return bundle
-
-
-def test_existing_bundle_requires_exact_matching_original_for_parity(harness):
-    h = harness
-    bundle = existing_bundle(h)
-    with pytest.raises(ValueError, match="matching original PyTorch checkpoint"):
-        prepare(h)
-    assert_unpublished(h)
-    assert not h.calls
-    effective, record = prepare(h, reference_checkpoint=h.source)
-    assert effective["checkpoint"] == str(bundle)
-    assert h.calls == [("torch", h.source), ("mlx", bundle)]
-    assert record["checks"]["parity_passed"]
-
-
-def test_existing_bundle_can_find_relative_cpu_configuration_reference(harness):
-    h = harness
-    bundle = existing_bundle(h)
-    (h.state.parent / "runtime-cpu.json").write_text(
-        json.dumps(
-            {"decoder_dir": "decoder", "python_executable": "python", "checkpoint": h.source.name}
-        )
-    )
-    effective, _ = prepare(h)
-    assert effective["checkpoint"] == str(bundle) and h.calls[0] == ("torch", h.source)
-
-
-@pytest.mark.parametrize("damaged_original", [False, True])
-def test_prepared_apple_bundle_retains_its_original_after_cpu_release_changes(harness, monkeypatch, damaged_original):
-    h = harness
-    apple_options(h)
-    convert = preparation._execute
-
-    def complete_bundle(command, *args):
-        convert(command, *args)
-        bundle = Path(command[4])
-        (bundle / "tokenizer.json").write_text("{}")
-        (bundle / "manifest.json").write_text(json.dumps({"source_sha256": preparation.file_sha256(h.source)}))
-
-    monkeypatch.setattr(preparation, "_execute", complete_bundle)
-    effective, _ = prepare(h)
-    newer = h.source.with_name("newer-release.ckpt")
-    newer.write_bytes(b"different checkpoint for a later CPU setup")
-    (h.state.parent / "runtime-cpu.json").write_text(json.dumps(
-        {"decoder_dir": "decoder", "python_executable": "python", "checkpoint": str(newer)}))
-    h.options["checkpoint"] = effective["checkpoint"]
-    h.calls.clear()
-    if damaged_original:
-        h.source.write_bytes(b"damaged original")
-        with pytest.raises(ValueError, match="matching original PyTorch checkpoint"):
-            prepare(h)
-        assert not h.calls
-    else:
-        restored, record = prepare(h)
-        assert restored["checkpoint"] == effective["checkpoint"]
-        assert record["checks"]["parity_passed"]
-        assert h.calls == [("torch", h.source), ("mlx", Path(effective["checkpoint"]))]
 
 
 def test_converted_weights_tampering_cannot_reuse_preparation(harness):
@@ -882,8 +760,6 @@ def test_explicit_prepare_cli_prints_parseable_record_without_network(harness, c
                 h.options["decoder_dir"],
                 "--python",
                 h.options["python_executable"],
-                "--checkpoint",
-                str(h.source),
                 "--state-dir",
                 str(h.state),
                 "--model-id",

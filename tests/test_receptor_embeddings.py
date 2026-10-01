@@ -15,7 +15,7 @@ COMPONENTS = dict(trav="TRAV21", traj="TRAJ6", cdr3a="CAVRPGGAGPFFVVF",
                   trbv="TRBV7-9", trbj="TRBJ2-7", cdr3b="CASSLGQAYEQYF")
 OPTIONS = dict(decoder_dir="/unused", python_executable="/unused/python", model="esmc-300m")
 FINGERPRINT = dict(decoder_dir="/unused", python_executable="/unused/python",
-                   checkpoint_sha256="a" * 64, checkpoint_path="/unused/model")
+                   model_id="decodertcr@1.5.0:300M", checkpoint_sha256="a" * 64)
 
 
 def receptor_frame():

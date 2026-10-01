@@ -38,7 +38,11 @@ def reconstruct(input_path, output_path, species, stitch=None):
         if species == "mouse":
             from mouse_stitch import stitch_mouse_tcrs as stitch
         else:
-            from DecoderTCR.reconstruct.tcr import stitch_tcrs as stitch
+            from decodertcr_internal.reconstruct import stitch_tcrs as _stitch_tcrs
+
+            def stitch(rows):
+                # Upstream returns a list aligned to the input; re-key by name.
+                return {row["name"]: row for row in _stitch_tcrs(rows)}
     with open(input_path, newline="", encoding="utf-8") as source, open(
             output_path, "w", newline="", encoding="utf-8") as target:
         reader = csv.DictReader(source)
@@ -153,11 +157,8 @@ def load_encoder(args):
         runtime = {"backend": "mlx", "device": "apple", "tokenizer_variant": tokenizer.variant}
     else:
         import torch
-        from DecoderTCR.utils.model_zoo import load, resolve
-        # -I removes the script directory from sys.path. Import this sibling by
-        # its explicit trusted file path rather than weakening isolation.
-        import runpy
-        validate_inventory = runpy.run_path(str(Path(__file__).with_name("torch_checkpoint_worker.py")))["validate_inventory"]
+        from decodertcr_internal import load
+        from decodertcr_internal.constants import ALPHABET
         device = torch.device(args.device)
         if device.type not in ("cpu", "cuda") or (device.type == "cuda" and (
                 not torch.cuda.is_available() or (device.index is not None and device.index >= torch.cuda.device_count()))):
@@ -165,22 +166,21 @@ def load_encoder(args):
         torch.set_float32_matmul_precision("highest")
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
-        spec = resolve(args.model)
-        inventory = torch.load(args.checkpoint, map_location="cpu", weights_only=True, mmap=True)
-        validate_inventory(inventory, spec.arch)
-        del inventory
-        wrapper, _ = load(args.model, device=device, checkpoint=Path(args.checkpoint),
-                          backbone=spec.backbone, arch=spec.arch)
-        wrapper.eval()
-        if any(parameter.is_floating_point() and parameter.dtype != torch.float32 for parameter in wrapper.parameters()):
+        loaded = load(args.model_id, device=str(device), registry=None)
+        if loaded.artifact_sha256 != args.checkpoint_sha256:
+            raise ValueError("Embedding model artifact identity changed")
+        loaded.module.eval()
+        if any(parameter.is_floating_point() and parameter.dtype != torch.float32 for parameter in loaded.module.parameters()):
             raise ValueError("Receptor embeddings require actual FP32 parameters")
-        actual = next(wrapper.parameters()).device
+        actual = next(loaded.module.parameters()).device
         if actual.type != device.type or (device.index is not None and actual.index != device.index):
             raise RuntimeError("Embedding model device changed; fallback is disabled")
-        raw_model = wrapper.model
-        tokenizer = raw_model.tokenizer
+        raw_model = loaded.module
+        cls_idx, eos_idx = ALPHABET.cls_idx, ALPHABET.eos_idx
+        def encode_sequence(sequence):
+            return [cls_idx, *(ALPHABET.get_idx(residue) for residue in sequence), eos_idx]
         def encode(sequences):
-            tokens = token_array(sequences, tokenizer.encode, tokenizer.pad_token_id)
+            tokens = token_array(sequences, encode_sequence, raw_model.tokenizer.pad_token_id)
             with torch.inference_mode():
                 pooled = torch_pool(raw_model, torch.as_tensor(tokens, dtype=torch.long, device=device), torch)
                 return pooled.cpu().numpy()
@@ -290,6 +290,7 @@ def main():
     for name in ("input", "output", "species"):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--model", choices=tuple(WIDTHS))
+    parser.add_argument("--model-id")
     parser.add_argument("--device")
     parser.add_argument("--checkpoint")
     parser.add_argument("--checkpoint-sha256")
@@ -303,8 +304,10 @@ def main():
     else:
         if not 1 <= args.batch_size <= 128 or not 3 <= args.token_budget <= 262144:
             raise ValueError("Invalid embedding batch size/token budget")
-        if not all((args.model, args.device, args.checkpoint, args.checkpoint_sha256)):
-            raise ValueError("Inference requires explicit model, device and checkpoint identity")
+        # Apple loads a converted bundle by path; torch resolves the registry model ID.
+        source = args.checkpoint if args.device == "apple" else args.model_id
+        if not all((args.model, args.device, source, args.checkpoint_sha256)):
+            raise ValueError("Inference requires explicit model, device and model identity")
         infer(args)
 
 

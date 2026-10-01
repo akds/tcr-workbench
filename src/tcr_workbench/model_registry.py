@@ -12,28 +12,24 @@ class DecoderModel:
     name: str
     backbone: str
     arch: str
-    checkpoint: str
+    model_id: str
+    convention: str = "v2"
     apple_supported: bool = False
 
 
 MODELS = {
-    name: DecoderModel(name, backbone, arch, path, apple)
-    for name, backbone, arch, path, apple in [
+    name: DecoderModel(name, backbone, arch, model_id, convention, apple)
+    for name, backbone, arch, model_id, convention, apple in [
         ("DecoderTCR-ESMC_300M", "esmc", "DecoderTCRC_300M",
-         "checkpoints/DecoderTCR-ESMC-V0.3/300M.ckpt", True),
+         "decodertcr@1.5.0:300M", "v2", True),
         ("DecoderTCR-ESMC_600M", "esmc", "DecoderTCRC_600M",
-         "checkpoints/DecoderTCR-ESMC-V0.3/600M.ckpt", True),
+         "decodertcr@1.5.0:600M", "v2", True),
         ("DecoderTCR-ESMC_6B", "esmc", "DecoderTCRC_6B",
-         "checkpoints/DecoderTCR-ESMC-V0.3/6B.ckpt", True),
-        ("DecoderTCR_650M", "esm2", "ESM2_650M",
-         "checkpoints/DecoderTCR-ESM2-V0.1/650M_DecoderTCR.ckpt", False),
-        ("DecoderTCR_3B", "esm2", "ESM2_3B",
-         "checkpoints/DecoderTCR-ESM2-V0.1/3B_DecoderTCR.ckpt", False),
+         "decodertcr@1.5.0:6B", "v2", True),
     ]
 }
 ALIASES = {"esmc-300m": "DecoderTCR-ESMC_300M", "esmc-600m": "DecoderTCR-ESMC_600M",
-           "esmc-6b": "DecoderTCR-ESMC_6B", "esm2-650m": "DecoderTCR_650M",
-           "esm2-3b": "DecoderTCR_3B"}
+           "esmc-6b": "DecoderTCR-ESMC_6B"}
 
 
 def resolve_model(name: str) -> DecoderModel:
@@ -41,6 +37,11 @@ def resolve_model(name: str) -> DecoderModel:
     if canonical not in MODELS:
         raise ValueError(f"unsupported model {name}; choose one of {sorted(MODELS)}")
     return MODELS[canonical]
+
+
+def registry_model_id(name: str) -> str:
+    """Return the decodertcr_internal registry model ID for a Workbench model name."""
+    return resolve_model(name).model_id
 
 
 def normalize_device(device: str) -> str:
@@ -63,7 +64,8 @@ def validate_precision(device: str, precision: str) -> str:
     return precision
 
 
-def validate_backend(model: str, device: str, checkpoint, mlx_python, precision: str = "float32") -> DecoderModel:
+def validate_backend(model: str, device: str, checkpoint, mlx_python, precision: str = "float32",
+                     *, require_checkpoint: bool = True) -> DecoderModel:
     validate_precision(device, precision)
     spec = resolve_model(model)
     if device == "apple":
@@ -71,8 +73,20 @@ def validate_backend(model: str, device: str, checkpoint, mlx_python, precision:
             raise ValueError(f"Apple MLX supports ESM-C 300M, 600M and 6B architectures only, not {spec.name}")
         if spec.name != "DecoderTCR-ESMC_300M" and precision != "float32":
             raise ValueError(f"Apple {spec.name} currently requires float32 precision")
-        if checkpoint is None or mlx_python is None:
+        if mlx_python is None:
+            raise ValueError("Apple MLX requires --mlx-python PYTHON")
+        # Preparation converts the bundle from the registry artifact, so the bundle
+        # need not exist yet; running inference still requires the converted bundle.
+        if require_checkpoint and checkpoint is None:
             raise ValueError("Apple MLX requires --checkpoint CONVERTED_BUNDLE and --mlx-python PYTHON")
-    elif mlx_python is not None:
-        raise ValueError("--mlx-python applies only to --device apple")
+    else:
+        # CPU/CUDA always load the registry weights selected by --model. A checkpoint
+        # is silently ignored there, so reject it rather than score with weights the
+        # configuration did not actually choose.
+        if checkpoint is not None:
+            raise ValueError("--checkpoint applies only to --device apple; CPU/CUDA load the registry "
+                             "weights selected by --model. Remove --checkpoint and clear it from any "
+                             "saved settings.")
+        if mlx_python is not None:
+            raise ValueError("--mlx-python applies only to --device apple")
     return spec

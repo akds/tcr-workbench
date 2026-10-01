@@ -24,14 +24,25 @@ import numpy as np
 import polars as pl
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
-from .model_registry import MODELS, normalize_device, resolve_model, validate_backend
+from .model_registry import normalize_device, resolve_model, validate_backend
 
 PathLike = Union[str, Path]
 AA = "ACDEFGHIKLMNPQRSTVWY"
 GENES = ["trav", "traj", "cdr3a", "trbv", "trbj", "cdr3b"]
 COMPONENTS = GENES + ["hla", "peptide"]
 DEFAULT_MODEL = "DecoderTCR-ESMC_300M"
-CHECKPOINTS = {name: spec.checkpoint for name, spec in MODELS.items()}
+# Minimum decodertcr_internal package that publishes the registry-resolved
+# releases and sequence conventions this adapter targets.
+MIN_DECODER_VERSION = "0.4.0"
+
+
+def _version_tuple(value: str) -> tuple:
+    """Compare dotted release versions numerically, ignoring any suffix."""
+    parts = []
+    for token in str(value).split("."):
+        digits = re.match(r"\d+", token)
+        parts.append(int(digits.group()) if digits else 0)
+    return tuple(parts)
 
 
 def normalize_decoder_device(device: str) -> str:
@@ -653,41 +664,56 @@ def _annotate_gene_resolution(frame: pl.DataFrame) -> pl.DataFrame:
 
 
 def _model_fingerprint(
-    decoder_dir: PathLike, python_executable: PathLike, model: str, *, checkpoint=None
+    decoder_dir: PathLike, python_executable: PathLike, model: str
 ) -> Dict[str, Any]:
-    root = Path(decoder_dir).resolve()
-    if model not in CHECKPOINTS:
-        raise ValueError(f"unsupported model {model}; choose one of {sorted(CHECKPOINTS)}")
-    checkpoint = Path(checkpoint).resolve() if checkpoint is not None else root / CHECKPOINTS[model]
-    if not checkpoint.is_file():
-        raise FileNotFoundError(f"DecoderTCR checkpoint is not installed: {checkpoint}")
-    return {"model": model, "checkpoint_sha256": file_sha256(checkpoint),
-            **_decoder_fingerprint(root, python_executable)}
+    spec = resolve_model(model)
+    fingerprint = {"model": spec.name, "model_id": spec.model_id,
+                   **_decoder_fingerprint(decoder_dir, python_executable, model_id=spec.model_id)}
+    verify_sequence_convention(fingerprint)
+    return fingerprint
 
 
-def _decoder_fingerprint(decoder_dir: PathLike, python_executable: PathLike) -> Dict[str, Any]:
-    """Fingerprint reconstruction code and environment without scanning model weights."""
+def verify_sequence_convention(fingerprint: Dict[str, Any]) -> None:
+    """Fail closed when the weights' declared convention differs from the one Workbench
+    uses to build inputs.
+
+    Reconstruction builds sequences with the static per-model ``convention`` (v2 for the
+    released decodertcr@1.5.0 models; v1 for an earlier V0.3 model). The registry also
+    declares the weights' own ``sequence_convention``. If these disagree, Workbench would
+    feed v2 sequences to a v1 model (or vice versa), so refuse rather than mix conventions.
+    """
+    declared = fingerprint.get("model_sequence_convention")
+    if declared is None:
+        return
+    expected = resolve_model(fingerprint["model"]).convention
+    if declared != expected:
+        raise ValueError(
+            f"model {fingerprint['model']} builds sequences with the {expected!r} convention, but the "
+            f"resolved weights declare {declared!r}; the registry model entry's convention must match the "
+            "weights so V0.3 (v1) and 1.5.0 (v2) sequence constructions are never mixed.")
+
+
+def _decoder_fingerprint(
+    decoder_dir: PathLike, python_executable: PathLike, *, model_id: Optional[str] = None
+) -> Dict[str, Any]:
+    """Fingerprint the installed package, registry identity and environment.
+
+    Weights live in the shared decodertcr_internal registry and are resolved by
+    the model environment; this never scans model weights or requires a source
+    checkout. When ``model_id`` is given, the registry artifact and catalog
+    identity are bound so cached scores follow the exact released weights.
+    """
     root = Path(decoder_dir).resolve()
-    source = root / "src" / "DecoderTCR"
-    if not (source / "utils" / "predict_from_genes.py").is_file():
-        raise ValueError(f"not a supported DecoderTCR checkout: {root}")
-    code = hashlib.sha256()
-    # Include packaged reconstruction references and lockfiles, not only Python.
-    paths = [p for p in (root / "src").rglob("*") if p.is_file() and "__pycache__" not in p.parts]
-    paths.extend(p for p in [root / "uv.lock", root / "pyproject.toml"] if p.is_file())
-    for path in sorted(paths):
-        code.update(str(path.relative_to(root)).encode())
-        code.update(file_sha256(path).encode())
     python = Path(python_executable).absolute()
     if not python.is_file():
         raise FileNotFoundError(f"DecoderTCR Python executable is missing: {python}")
-    environment = _environment_fingerprint(python, root)
+    environment = _environment_fingerprint(python, root, model_id)
     # HLA parsing, schema, and reporting contracts are transitive dependencies
     # of this adapter. Any package source change invalidates cached model output.
     from .report import source_digest
     adapter_sha256 = source_digest()
     return {
-        "decoder_source_sha256": code.hexdigest(),
+        "decoder_package": "decodertcr_internal",
         "workbench_adapter_sha256": adapter_sha256,
         "python_executable": str(python),
         "python_sha256": file_sha256(python),
@@ -715,13 +741,16 @@ def _decoder_environment(python: PathLike) -> Dict[str, str]:
     return environment
 
 
-def _environment_fingerprint(python: Path, root: Path) -> Dict[str, str]:
-    """Identify installed dependencies and external stitchr germline resources.
+def _environment_fingerprint(
+    python: Path, root: Path, model_id: Optional[str] = None
+) -> Dict[str, str]:
+    """Identify the installed package, registry identity and germline resources.
 
-    Query package metadata and stitchr's resource location in the model environment;
-    do not import torch or instantiate a model to decide whether to reuse scores.
+    Query decodertcr_internal, the configured registry and stitchr resources in the
+    model environment; do not import torch or instantiate a model to decide whether
+    to reuse scores. Weights are resolved from the shared registry, not downloaded.
     """
-    script = """
+    script = f"""
 import importlib.metadata as metadata
 import importlib.util
 import importlib
@@ -729,7 +758,13 @@ import json
 from pathlib import Path
 import platform
 import sys
-spec = importlib.util.find_spec('DecoderTCR')
+result = {{'python_version': sys.version, 'platform': platform.platform()}}
+spec = importlib.util.find_spec('decodertcr_internal')
+result['decoder_origin'] = str(Path(spec.origin).resolve()) if spec and spec.origin else None
+if spec is None:
+    print(json.dumps(result)); sys.exit(0)
+dt = importlib.import_module('decodertcr_internal')
+result['decoder_version'] = getattr(dt, '__version__', None)
 germline_roots = []
 for name in ('Stitchr', 'stitchr'):
     package = importlib.util.find_spec(name)
@@ -738,10 +773,29 @@ for name in ('Stitchr', 'stitchr'):
 if importlib.util.find_spec('Stitchr') is not None:
     sf = importlib.import_module('Stitchr.stitchrfunctions')
     germline_roots.append(str(Path(sf.data_dir).resolve()))
+try:
+    from decodertcr_internal.core import registry_root
+    result['registry_root'] = str(registry_root())
+except Exception as exc:
+    result['registry_error'] = str(exc)
+model_id = {model_id!r}
+if 'registry_error' not in result:
+    try:
+        if model_id is not None:
+            info = dt.info(model_id)
+            result['catalog_sha256'] = info['catalog_sha256']
+            result['artifact_sha256'] = info['member']['weights']['sha256']
+            result['manifest_sha256'] = info['manifest']['sha256']
+            result['model_sequence_convention'] = info['member']['sequence_convention']
+            result['model_state'] = info['state']
+        else:
+            dt.models()
+    except Exception as exc:
+        result['registry_error'] = str(exc)
 packages = sorted((d.metadata.get('Name', ''), d.version) for d in metadata.distributions())
-print(json.dumps({'decoder_origin': str(Path(spec.origin).resolve()) if spec and spec.origin else None,
-                  'germline_roots': sorted(set(germline_roots)), 'packages': packages,
-                  'python_version': sys.version, 'platform': platform.platform()}))
+result['germline_roots'] = sorted(set(germline_roots))
+result['packages'] = packages
+print(json.dumps(result))
 """
     try:
         process = subprocess.run(
@@ -754,19 +808,31 @@ print(json.dumps({'decoder_origin': str(Path(spec.origin).resolve()) if spec and
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise RuntimeError("could not inspect the DecoderTCR Python environment") from exc
+        raise RuntimeError("could not inspect the decodertcr_internal Python environment") from exc
     if process.returncode:
-        raise RuntimeError(f"could not inspect DecoderTCR environment: {process.stderr[-2000:]}")
+        raise RuntimeError(f"could not inspect decodertcr_internal environment: {process.stderr[-2000:]}")
     try:
         info = json.loads(process.stdout)
     except (ValueError, TypeError) as exc:
-        raise ValueError("DecoderTCR environment returned invalid metadata") from exc
-    expected = (root / "src" / "DecoderTCR" / "__init__.py").resolve()
-    if info.get("decoder_origin") != str(expected):
+        raise ValueError("decodertcr_internal environment returned invalid metadata") from exc
+    if info.get("decoder_origin") is None:
         raise ValueError(
-            "Python environment must import DecoderTCR from the supplied checkout; "
-            f"expected {expected}, found {info.get('decoder_origin')}"
+            "decodertcr_internal is not installed in the selected Python environment; "
+            "run setup to install it and configure the registry"
         )
+    version = info.get("decoder_version")
+    if version is None or _version_tuple(version) < _version_tuple(MIN_DECODER_VERSION):
+        raise ValueError(
+            f"decodertcr_internal {version} is too old; install >= {MIN_DECODER_VERSION}"
+        )
+    if info.get("registry_error"):
+        raise ValueError(
+            "decodertcr_internal registry is not available: "
+            f"{info['registry_error']}. Configure it with "
+            "`decodertcr configure --registry <root>` or set DECODERTCR_REGISTRY"
+        )
+    if info.get("model_state") == "blocked":
+        raise ValueError(f"model {model_id} is blocked in the registry inventory")
     germlines = hashlib.sha256()
     for package_dir in info.pop("germline_roots", []):
         package = Path(package_dir)
@@ -775,7 +841,13 @@ print(json.dumps({'decoder_origin': str(Path(spec.origin).resolve()) if spec and
                 germlines.update(str(path.relative_to(package)).encode())
                 germlines.update(file_sha256(path).encode())
     environment = hashlib.sha256(json.dumps(info, sort_keys=True).encode()).hexdigest()
-    return {"environment_sha256": environment, "germline_sha256": germlines.hexdigest()}
+    identity = {"environment_sha256": environment, "germline_sha256": germlines.hexdigest(),
+                "decoder_version": version, "decoder_origin": info["decoder_origin"],
+                "registry_root": info.get("registry_root", "")}
+    for key in ("catalog_sha256", "artifact_sha256", "manifest_sha256", "model_sequence_convention"):
+        if key in info:
+            identity[key] = info[key]
+    return identity
 
 
 _WORKER_PROGRESS_INTERVAL = 30.0
@@ -846,8 +918,9 @@ def run_decoder(
 ) -> Dict[str, Any]:
     """Run the selected backend atomically; reuse only fully matching hashes.
 
-    A checkpoint is hashed once per call with bounded memory. Any mismatch in
-    model, input, source, device or existing output requires force=True.
+    Registry weights are identified by their released artifact hash, not scanned
+    from disk. Any mismatch in model, input, registry identity, device or existing
+    output requires force=True.
     """
     device = normalize_decoder_device(device)
     model = validate_backend(model, device, checkpoint, mlx_python, precision).name
@@ -867,9 +940,7 @@ def run_decoder(
             decoder_dir, python_executable, model, checkpoint, mlx_python,
             batch_size=batch_size, token_budget=token_budget, cache_bytes=cache_bytes, precision=precision)
     else:
-        model_fingerprint = (_model_fingerprint(decoder_dir, python_executable, model)
-            if checkpoint is None else _model_fingerprint(
-                decoder_dir, python_executable, model, checkpoint=checkpoint))
+        model_fingerprint = _model_fingerprint(decoder_dir, python_executable, model)
     fingerprint = {
         **model_fingerprint,
         **biology,
@@ -880,9 +951,7 @@ def run_decoder(
         "schema_version": 1,
     }
     if device != "apple":
-        fingerprint.update(context_type="tcr-pmhc", backend="torch", dtype="float32", cache_bytes=cache_bytes)
-        if checkpoint is not None:
-            fingerprint["checkpoint_path"] = str(Path(checkpoint).resolve())
+        fingerprint.update(context_type="tcr-pmhc", backend="torch", dtype="float32")
     if output.exists() and not force:
         sidecar = _sidecar(output)
         previous = json.loads(sidecar.read_text()) if sidecar.exists() else {}
@@ -1083,9 +1152,7 @@ def run_decoder_profile(
             decoder_dir, python_executable, model, checkpoint, mlx_python,
             batch_size=batch_size, token_budget=token_budget, cache_bytes=cache_bytes, precision=precision)
     else:
-        fingerprint = (_model_fingerprint(decoder_dir, python_executable, model)
-            if checkpoint is None else _model_fingerprint(
-                decoder_dir, python_executable, model, checkpoint=checkpoint))
+        fingerprint = _model_fingerprint(decoder_dir, python_executable, model)
     fingerprint.update(precision=precision, approximate=precision == "float16", **biology)
     with tempfile.TemporaryDirectory(prefix="profile-", dir=output.parent) as temporary:
         candidate = Path(temporary) / "profile.csv"
@@ -1097,9 +1164,7 @@ def run_decoder_profile(
             from .backends.torch_decoder import execute_torch
             executor = execute_torch
             fingerprint.update(context_type="tcr-pmhc", backend="torch", device=device,
-                               dtype="float32", cache_bytes=cache_bytes)
-            if checkpoint is not None:
-                fingerprint["checkpoint_path"] = str(Path(checkpoint).resolve())
+                               dtype="float32")
         runtime = executor(source, candidate, temporary, fingerprint, timeout=timeout, profile=True)
         fingerprint.update(runtime)
         verify_biological_fingerprint(fingerprint)

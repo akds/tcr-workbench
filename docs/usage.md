@@ -120,14 +120,14 @@ Use `--device cpu` or `--device gpu` for another installation. To add mouse germ
 
 Bundled mouse molecules are `H-2-Kb`, `H-2-Db`, `H-2-IAb` and `H-2-IAk`. Use mouse receptor genes. The `hla` column and `--hla` flag name the MHC molecule in either species; cross-species inputs fail validation.
 
-Replace the checkpoint path in this template with your existing file:
+Select a mouse-trained release with `--model` and run with `--species mouse`:
 
 ```sh
 python3 tcr.py pmhc-profile --species mouse --hla H-2-Kb --length 8 \
-  --checkpoint /path/to/mouse-trained.ckpt --out results/mouse_kb_profile
+  --model esmc-300m --out results/mouse_kb_profile
 ```
 
-The same species/checkpoint flags apply to all five model commands. New mouse-trained checkpoints require a supported architecture; successful preparation does not establish predictive accuracy. Additional molecules need the mouse-only `--mhc-reference data/mouse_mhc.json` override; see [input formats](input-formats.md#human-and-mouse).
+The same species/model flags apply to all five model commands. New mouse-trained releases require a supported architecture; successful preparation does not establish predictive accuracy. Additional molecules need the mouse-only `--mhc-reference data/mouse_mhc.json` override; see [input formats](input-formats.md#human-and-mouse).
 
 ## Read scores and profiles
 
@@ -160,7 +160,7 @@ With embedding matching enabled, both searches restrict reference rows to the re
 
 ## Hardware and saved settings
 
-Commands use saved runtime defaults unless overridden by flags. Select another configuration with `python3 tcr.py --config /path/to/runtime.json ...`. For an existing CPU/CUDA installation, see `python3 tcr.py configure --help`; supply its DecoderTCR directory, interpreter and checkpoint. `--model` and `--device` select model and hardware independently.
+Commands use saved runtime defaults unless overridden by flags. Select another configuration with `python3 tcr.py --config /path/to/runtime.json ...`. For an existing installation, see `python3 tcr.py configure --help`; supply its `decodertcr_internal` interpreter. Weights are resolved from the shared registry (`decodertcr configure --registry <root>` or `DECODERTCR_REGISTRY`). `--model` and `--device` select model and hardware independently.
 
 | Device | Supported path | Precision |
 |---|---|---|
@@ -168,7 +168,7 @@ Commands use saved runtime defaults unless overridden by flags. Select another c
 | `gpu` or `cuda:N` | NVIDIA GPU on Linux; untested | `float32` |
 | `apple` | Apple Silicon; 6B is experimental | `float32` default; explicit `float16` for 300M only |
 
-NVIDIA execution and 6B inference are untested. For a different model or checkpoint, follow [models and upgrades](upgrading.md).
+NVIDIA execution and 6B inference are untested. For a different model or release, follow [models and upgrades](upgrading.md).
 
 For an installed Apple configuration, approximate FP16 is optional:
 

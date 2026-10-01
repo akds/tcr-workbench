@@ -1,0 +1,10 @@
+# Workbench runtime state, prepared models, checkpoints and generated analyses
+.tcr/
+
+# Python build/runtime artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtual environments
+.venv/
